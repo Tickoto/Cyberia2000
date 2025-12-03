@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CyberZone 2004 - MMO Simulator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+
+        :root {
+            --ui-bg: rgba(10, 15, 20, 0.95);
+            --ui-border: 2px solid #445566;
+            --text-color: #aaccff;
+        }
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { overflow: hidden; background: #000; font-family: 'VT323', monospace; color: var(--text-color); user-select: none; }
+        
+        #game-ui { position: absolute; top: 0; left: 0; width: 100%; height: 100%; pointer-events: none; display: none; }
+        
+        .panel-box {
+            background: var(--ui-bg);
+            border: 2px solid #556677;
+            box-shadow: 0 0 10px rgba(0,0,0,0.8);
+            padding: 10px;
+            pointer-events: auto;
+        }
+
+        #hud-clock {
+            position: absolute; top: 20px; right: 20px;
+            font-size: 2.5em; letter-spacing: 2px;
+            background: #111; border: 2px solid #555; color: #fff;
+            padding: 5px 15px;
+        }
+
+        #hud-location-box {
+            position: absolute; top: 40%; right: 20px;
+            width: 280px; text-align: right;
+        }
+        #hud-health-bar {
+            width: 100%; height: 15px; background: #222; border: 1px solid #000; margin-bottom: 5px;
+        }
+        #hud-health-fill {
+            width: 100%; height: 100%; background: linear-gradient(90deg, #00ff00, #ffff00);
+        }
+        #hud-stamina-bar { width: 100%; height: 12px; background: #111; border: 1px solid #000; margin-bottom: 5px; }
+        #hud-stamina-fill { width: 100%; height: 100%; background: linear-gradient(90deg, #00bbee, #005577); }
+        .loc-title { font-size: 2.2em; margin: 0; line-height: 1; text-transform: uppercase; color: #fff; text-shadow: 2px 2px 0 #000; letter-spacing: 1px;}
+        .loc-sub { font-size: 1.4em; color: #8899aa; }
+
+        #hud-chat { 
+            position: absolute; bottom: 20px; right: 20px; 
+            width: 450px; height: 250px; 
+            display: flex; flex-direction: column;
+        }
+        .chat-tabs { display: flex; gap: 5px; margin-bottom: 5px; }
+        .chat-tab { background: #223344; padding: 2px 10px; font-size: 1.1em; cursor: pointer; border: 1px solid #111; color:#8899aa; }
+        .chat-tab.active { background: #445566; font-weight: bold; color:#fff; }
+        
+        #chat-log { 
+            flex: 1; overflow-y: auto; font-size: 1.2em; 
+            margin-bottom: 5px; border: 2px inset #112233; 
+            padding: 5px; background: rgba(0,0,0,0.8); 
+        }
+        #chat-input { 
+            width: 96%; background: #050a10; border: 2px inset #334455; 
+            color: white; padding: 5px; font-family: inherit; font-size: 1.2em; 
+        }
+
+        #interaction-prompt {
+            position: absolute; top: 60%; left: 50%; transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8); padding: 5px 15px; border: 1px solid white;
+            color: white; font-size: 1.5em; display: none;
+        }
+
+        #interaction-panel {
+            position: absolute; bottom: 40%; left: 50%; transform: translateX(-50%);
+            width: 480px; background: rgba(8,12,16,0.92); border: 2px solid #55aaff; padding: 14px;
+            display: none; pointer-events: auto; box-shadow: 0 0 18px rgba(0,0,0,0.8);
+        }
+        #interaction-title { font-size: 1.6em; color: #fff; margin-bottom: 4px; }
+        #interaction-desc { color: #99ccff; font-size: 1.1em; margin-bottom: 8px; }
+        #interaction-status { color: #66ff99; font-size: 1em; margin-bottom: 10px; }
+        #interaction-actions { display: flex; gap: 6px; flex-wrap: wrap; }
+        .action-btn { padding: 8px 12px; background: #223; color: #aeeaff; border: 1px solid #446; font-family: 'VT323'; cursor: pointer; }
+        .action-btn:hover { background: #335; }
+        .action-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+        #char-creator {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: #111;
+            display: flex; pointer-events: auto; z-index: 10;
+        }
+        #cc-controls { 
+            width: 340px; padding: 20px; background: #1a1a1a; border-right: 4px solid #333; 
+            color: #ddd; font-family: sans-serif;
+            display: flex; flex-direction: column; gap: 10px;
+            overflow-y: auto;
+        }
+        h2 { border-bottom: 1px solid #555; padding-bottom: 5px; margin: 0; font-size: 1rem; color: #aaa; text-transform: uppercase; }
+        label { font-size: 0.8rem; color: #888; display: block; margin-top: 5px; }
+        .cc-row { display: flex; gap: 5px; }
+        button.cc-btn {
+            background: #333; border: 1px solid #555; color: white; padding: 8px 15px; cursor: pointer; flex: 1;
+        }
+        button.cc-btn:hover { background: #555; }
+        button.cc-btn.active { background: #aa0000; border-color: #ff3333; }
+        button.start-btn {
+            width: 100%; padding: 15px; background: #aa0000; border: none; color: white; font-weight: bold; margin-top: auto; cursor: pointer; border: 2px solid #ff3333; font-size: 1.4em; font-family: 'VT323';
+        }
+        button.start-btn:hover { background: #ff0000; }
+        
+        #cc-preview { flex: 1; background: radial-gradient(circle, #2a2a2a 0%, #000 100%); position: relative;}
+        
+        select, input[type="text"] {
+            width: 100%; padding: 8px; background: #000; border: 1px solid #444; color: white; font-family: inherit;
+        }
+        input[type="range"] { width: 100%; }
+        input[type="color"] { width: 60px; height: 30px; border: 1px solid #444; background: #000; cursor: pointer; }
+        
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #111; }
+        ::-webkit-scrollbar-thumb { background: #555; }
+
+        #minimap {
+            position: absolute; top: 20px; left: 20px;
+            width: 180px; height: 180px;
+            background: rgba(0,0,0,0.8);
+            border: 2px solid #446;
+            pointer-events: auto;
+        }
+        #minimap canvas { width: 100%; height: 100%; }
+
+        #war-status {
+            position: absolute; bottom: 20px; left: 20px;
+            padding: 10px; font-size: 1.2em;
+        }
+        .faction-line { margin: 3px 0; }
+        .faction-red { color: #f66; }
+        .faction-green { color: #6f6; }
+        .faction-blue { color: #66f; }
+
+        #controls-help {
+            position: absolute; bottom: 280px; right: 20px;
+            background: rgba(0,0,0,0.7);
+            border: 1px solid #446;
+            padding: 10px; font-size: 1.1em;
+            pointer-events: auto;
+        }
+        #controls-help div { margin: 3px 0; }
+        #controls-help span { color: #8af; }
+    </style>
+</head>
+<body>
+
+<div id="char-creator">
+    <div id="cc-controls">
+        <h1 style="color:white; font-family:'VT323'; text-align:center; font-size:2.5em; margin-bottom:10px; text-shadow: 0 0 10px red;">CYBERIA 2004</h1>
+        
+        <h2>Identity</h2>
+        <div>
+            <label>Handle</label>
+            <input type="text" id="cc-username" value="Crimson_V">
+        </div>
+        
+        <h2>Body</h2>
+        <div class="cc-row">
+            <button class="cc-btn active" id="btn-female" onclick="setGender('female')">FEMALE</button>
+            <button class="cc-btn" id="btn-male" onclick="setGender('male')">MALE</button>
+        </div>
+
+        <label>Height</label>
+        <input type="range" id="cc-height" min="0.9" max="1.1" step="0.01" value="1.0">
+        
+        <label>Skin Tone</label>
+        <input type="color" id="cc-skin" value="#ffe0bd">
+
+        <h2>Style</h2>
+        <label>Hair Style</label> 
+        <select id="cc-hair">
+            <option value="2">Anime Bob</option>
+            <option value="1">Spiky</option>
+            <option value="0">Bald</option>
+        </select>
+        
+        <label>Hair Color</label>
+        <input type="color" id="cc-haircolor" value="#aa0000">
+        
+        <label>Jacket Color</label>
+        <input type="color" id="cc-jacket" value="#111111">
+        
+        <label>Top Color</label>
+        <input type="color" id="cc-shirt" value="#990000">
+        
+        <label>Pants Color</label>
+        <input type="color" id="cc-pants" value="#223355">
+
+        <button class="start-btn" onclick="startGame()">JACK IN</button>
+    </div>
+    <div id="cc-preview"></div>
+</div>
+
+<div id="game-ui">
+    <div id="minimap">
+        <canvas id="minimap-canvas" width="180" height="180"></canvas>
+    </div>
+    
+    <div id="hud-clock">18:33:45</div>
+
+    <div id="hud-location-box">
+        <div class="panel-box">
+            <div style="display:flex; justify-content:space-between; margin-bottom:2px; font-size:0.8em; color:#aaa;">
+                <span>HUD v1.0</span> <span>ONLINE</span>
+            </div>
+            <div id="hud-health-bar"><div id="hud-health-fill"></div></div>
+            <div id="hud-stamina-bar"><div id="hud-stamina-fill"></div></div>
+            <h1 class="loc-title" id="hud-location">Neo-Tokyo</h1>
+            <div class="loc-sub" id="hud-coords">Block C-4</div>
+            <div class="loc-sub" id="hud-environment">Clear skies</div>
+        </div>
+    </div>
+
+    <div id="war-status" class="panel-box">
+        <div style="color:#f88; margin-bottom:5px;">⚔ FACTION WAR</div>
+        <div class="faction-line"><span class="faction-red">Iron Legion:</span> <span id="faction-red-count">0</span></div>
+        <div class="faction-line"><span class="faction-green">Cyber Syndicate:</span> <span id="faction-green-count">0</span></div>
+        <div class="faction-line"><span class="faction-blue">Azure Alliance:</span> <span id="faction-blue-count">0</span></div>
+    </div>
+
+    <div id="hud-chat" class="panel-box">
+        <div class="chat-tabs">
+            <div class="chat-tab active">Global</div>
+            <div class="chat-tab">Local</div>
+            <div class="chat-tab">Log</div>
+        </div>
+        <div id="chat-log"></div>
+        <input type="text" id="chat-input" placeholder="Press Enter to chat...">
+    </div>
+
+        <div id="controls-help">
+            <div><span>WASD</span> - Move</div>
+            <div><span>SHIFT</span> - Run</div>
+            <div><span>CTRL</span> - Crouch</div>
+            <div><span>MOUSE</span> - Look</div>
+            <div><span>E</span> - Interact</div>
+            <div><span>ENTER</span> - Chat</div>
+        </div>
+
+    <div id="interaction-prompt">[E] INTERACT</div>
+    <div id="interaction-panel">
+        <div id="interaction-title">SYSTEM NODE</div>
+        <div id="interaction-desc">Awaiting input...</div>
+        <div id="interaction-status">Standby</div>
+        <div id="interaction-actions"></div>
+    </div>
+</div>
+
+<script type="module" src="./js/main.js"></script>
+</body>
+</html>
