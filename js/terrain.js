@@ -1,4 +1,5 @@
 import { CONFIG, BIOMES, CITY_BIOME } from './config.js';
+import { evaluateCityHeight } from './city-terrain-regulator.js';
 
 function lerp(a, b, t) {
     return a + (b - a) * t;
@@ -170,15 +171,8 @@ export function getCityInfluence(wx, wz) {
     return cityMask(wx, wz);
 }
 
-export function getTerrainHeight(wx, wz) {
+export function calculateNaturalTerrainHeight(wx, wz) {
     const biome = blendedBiome(wx, wz);
-    const cityInfluence = getCityInfluence(wx, wz);
-
-    // SHARP city flattening - no gradual blending to prevent uneven terrain
-    // If we're in a city area, return flat plateau height immediately
-    if (cityInfluence >= CONFIG.cityInfluenceThreshold) {
-        return CONFIG.cityPlateauHeight;
-    }
 
     // Apply domain warping for more organic, natural-looking terrain
     const warped = domainWarp(wx, wz, 15);
@@ -237,6 +231,25 @@ export function getTerrainHeight(wx, wz) {
     height = Math.max(height, -30);
 
     return height;
+}
+
+export function getTerrainHeight(wx, wz) {
+    const naturalHeight = calculateNaturalTerrainHeight(wx, wz);
+    const cityInfluence = getCityInfluence(wx, wz);
+    const cityProfile = evaluateCityHeight(wx, wz);
+
+    // If we are clearly inside a city block, completely flatten the terrain using the blueprint
+    if (cityInfluence >= CONFIG.cityInfluenceThreshold && cityProfile.forcePlateau) {
+        return CONFIG.cityPlateauHeight;
+    }
+
+    // Blend toward the plateau using both the blueprint weight and the sampled influence
+    const plateauBlend = Math.min(1, cityProfile.blend * (cityInfluence * 1.35));
+    if (plateauBlend > 0) {
+        return lerp(naturalHeight, CONFIG.cityPlateauHeight, plateauBlend);
+    }
+
+    return naturalHeight;
 }
 
 export function biomeInfoAtPosition(wx, wz) {
