@@ -4,6 +4,7 @@ export class PhysicsSystem {
     constructor() {
         this.bodies = new Set();
         this.chunkColliders = new Map();
+        this.boundingBoxes = new Map();
         this.dynamicVolumes = [];
         this._scratch = {
             gravity: new THREE.Vector3(0, -CONFIG.gravity, 0),
@@ -35,16 +36,74 @@ export class PhysicsSystem {
     addChunkColliders(key, colliders) {
         if (!colliders || colliders.length === 0) return;
 
-        const existing = this.chunkColliders.get(key);
-        if (existing) {
-            this.chunkColliders.set(key, existing.concat(colliders));
-        } else {
-            this.chunkColliders.set(key, colliders.slice());
+        const entry = this.chunkColliders.get(key) || { boxes: [], meshes: [] };
+
+        colliders.forEach(collider => {
+            if (!collider) return;
+
+            if (collider instanceof THREE.Box3) {
+                entry.boxes.push(collider.clone());
+                return;
+            }
+
+            if (collider.isObject3D || collider.isMesh) {
+                if (this.registerMeshCollider(collider)) {
+                    entry.meshes.push(collider);
+                }
+            }
+        });
+
+        if (entry.boxes.length || entry.meshes.length) {
+            this.chunkColliders.set(key, entry);
+        }
+    }
+
+    addChunkGroup(key, root) {
+        if (!root) return;
+        const entry = this.chunkColliders.get(key) || { boxes: [], meshes: [] };
+        root.traverse(obj => {
+            if (this.registerMeshCollider(obj)) {
+                entry.meshes.push(obj);
+            }
+        });
+
+        if (entry.boxes.length || entry.meshes.length) {
+            this.chunkColliders.set(key, entry);
         }
     }
 
     removeChunkColliders(key) {
+        const entry = this.chunkColliders.get(key);
+        if (entry?.meshes) {
+            entry.meshes.forEach(mesh => this.boundingBoxes.delete(mesh));
+        }
         this.chunkColliders.delete(key);
+    }
+
+    registerMeshCollider(mesh) {
+        if (!mesh || !mesh.isMesh) return false;
+        if (mesh.userData?.noCollision) return false;
+        if (this.boundingBoxes.has(mesh)) return true;
+
+        const box = new THREE.Box3().setFromObject(mesh);
+        const size = new THREE.Vector3();
+        box.getSize(size);
+
+        const minSize = Math.min(size.x, size.y, size.z);
+        const isLargeSurface = minSize < 0.05 && (size.x > 2 || size.z > 2);
+        if (minSize < 0.05 && !isLargeSurface) return false;
+
+        this.boundingBoxes.set(mesh, box);
+        return true;
+    }
+
+    updateColliderBox(mesh) {
+        if (!mesh || !mesh.isMesh) return null;
+        const box = this.boundingBoxes.get(mesh) || new THREE.Box3();
+        mesh.updateWorldMatrix(true, false);
+        box.setFromObject(mesh);
+        this.boundingBoxes.set(mesh, box);
+        return box;
     }
 
     getNearbyColliders(position) {
@@ -55,8 +114,17 @@ export class PhysicsSystem {
         for (let x = -1; x <= 1; x++) {
             for (let z = -1; z <= 1; z++) {
                 const key = `${cx + x},${cz + z}`;
-                const chunkList = this.chunkColliders.get(key);
-                if (chunkList) list.push(...chunkList);
+                const entry = this.chunkColliders.get(key);
+                if (!entry) continue;
+
+                if (entry.boxes?.length) list.push(...entry.boxes);
+
+                if (entry.meshes?.length) {
+                    entry.meshes.forEach(mesh => {
+                        const box = this.updateColliderBox(mesh);
+                        if (box) list.push(box);
+                    });
+                }
             }
         }
 

@@ -218,13 +218,16 @@ export class WorldManager {
         ground.receiveShadow = true;
         group.add(ground);
 
+        const chunkKey = `${cx},${cz}`;
+
         if (isCity) {
             this.generateCity(group, offsetX, offsetZ, cx, cz, colliders);
         } else {
             this.generateWilderness(group, offsetX, offsetZ, cx, cz, biome, colliders);
         }
 
-        this.physics.addChunkColliders(`${cx},${cz}`, colliders);
+        this.physics.addChunkColliders(chunkKey, colliders);
+        this.physics.addChunkGroup(chunkKey, group);
         this.interactionManager.generateForChunk(cx, cz);
         return group;
     }
@@ -1177,6 +1180,7 @@ export class WorldManager {
         });
 
         this.physics.addChunkColliders(chunkKey, colliders);
+        this.physics.addChunkGroup(chunkKey, group);
 
         this.scene.add(group);
         this.interiors[key] = group;
