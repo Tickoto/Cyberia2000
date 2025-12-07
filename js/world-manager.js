@@ -226,10 +226,10 @@ export class WorldManager {
         ground.rotation.x = -Math.PI / 2;
         ground.position.set(offsetX + CONFIG.chunkSize / 2, 0, offsetZ + CONFIG.chunkSize / 2);
         ground.receiveShadow = true;
+        // Mark as terrain - used for raycasting but NOT Box3 collision
+        // Terrain height is handled by terrainSampler in physics integration
+        ground.userData.isGround = true;
         group.add(ground);
-
-        const groundCollider = this.meshCollider(ground, 0.02);
-        if (groundCollider) colliders.push(groundCollider);
 
         const chunkKey = `${cx},${cz}`;
 
