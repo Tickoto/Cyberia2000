@@ -147,9 +147,12 @@ export const URBAN_BIOMES = {
 };
 
 // Function to get urban biome type based on influence strength
+// This should be called once per settlement/chunk to determine the settlement type,
+// NOT per-vertex or per-building to avoid morphing between types
 export function getUrbanBiomeType(influence, centerDistance = 0) {
     // Determine urban biome based on influence intensity
     // Higher influence = larger settlement type
+    // Use discrete thresholds to avoid morphing between types
     if (influence >= 0.85) {
         return URBAN_BIOMES.megacity;
     } else if (influence >= 0.65) {
@@ -160,6 +163,12 @@ export function getUrbanBiomeType(influence, centerDistance = 0) {
         return URBAN_BIOMES.village;
     }
     return null;
+}
+
+// Get urban biome type for a chunk based on its center influence
+// This ensures consistent settlement type across the entire chunk
+export function getUrbanBiomeForChunk(chunkCenterInfluence) {
+    return getUrbanBiomeType(chunkCenterInfluence);
 }
 
 // Function to determine urban biome at a world position
