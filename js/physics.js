@@ -33,7 +33,14 @@ export class PhysicsSystem {
     }
 
     addChunkColliders(key, colliders) {
-        this.chunkColliders.set(key, colliders);
+        if (!colliders || colliders.length === 0) return;
+
+        const existing = this.chunkColliders.get(key);
+        if (existing) {
+            this.chunkColliders.set(key, existing.concat(colliders));
+        } else {
+            this.chunkColliders.set(key, colliders.slice());
+        }
     }
 
     removeChunkColliders(key) {
