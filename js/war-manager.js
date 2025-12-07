@@ -13,7 +13,7 @@ export class WarManager {
 
         // Network sync
         this.networkManager = null;
-        this.isNetworkHost = false;
+        // Note: isNetworkHost is a getter that checks networkManager.isHost dynamically
         this.networkUpdateTimer = 0;
         this.networkUpdateInterval = 0.1; // 10 times per second
     }
