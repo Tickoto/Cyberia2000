@@ -16,6 +16,7 @@ const PORT = process.argv[2] || 8080;
 const rooms = new Map(); // roomId -> Set of clients
 const clientRooms = new Map(); // client -> roomId
 const clientInfo = new Map(); // client -> { clientId, username }
+const playerEntities = new Map(); // clientId -> last entity spawn/update data
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ port: PORT });
@@ -61,6 +62,43 @@ function handleMessage(client, message) {
             send(client, 'pong', { pingTime: timestamp });
             break;
 
+        case 'entity_spawn':
+            // Store entity spawn data for syncing to new players
+            if (data?.type === 'player' && clientId) {
+                playerEntities.set(clientId, { ...data, clientId, timestamp });
+            }
+            // Broadcast to room
+            if (data?.broadcast) {
+                broadcastToRoom(client, message);
+            }
+            break;
+
+        case 'entity_update':
+        case 'world_state':
+            // Update stored player entity data for position sync
+            if (data?.type === 'player' && clientId) {
+                const existing = playerEntities.get(clientId);
+                if (existing) {
+                    playerEntities.set(clientId, { ...existing, ...data, timestamp });
+                }
+            }
+            // Handle world_state with multiple entities
+            if (type === 'world_state' && data?.entities) {
+                for (const entity of data.entities) {
+                    if (entity.type === 'player' && entity.ownerId) {
+                        const existing = playerEntities.get(entity.ownerId);
+                        if (existing) {
+                            playerEntities.set(entity.ownerId, { ...existing, ...entity, timestamp });
+                        }
+                    }
+                }
+            }
+            // Broadcast to room
+            if (data?.broadcast) {
+                broadcastToRoom(client, message);
+            }
+            break;
+
         default:
             // Broadcast to room if it's a broadcast message
             if (data?.broadcast) {
@@ -98,7 +136,42 @@ function handleHandshake(client, data, clientId) {
         clientCount: rooms.get(roomId).size
     });
 
-    // Notify others in room
+    // Send existing players to the new client
+    // This allows new players to see players who connected before them
+    const room = rooms.get(roomId);
+    for (const otherClient of room) {
+        if (otherClient !== client && otherClient.readyState === WebSocket.OPEN) {
+            const otherInfo = clientInfo.get(otherClient);
+            if (otherInfo) {
+                // Send existing player's entity data if available
+                const entityData = playerEntities.get(otherInfo.clientId);
+                if (entityData) {
+                    // Send entity spawn message for existing player
+                    const spawnMessage = JSON.stringify({
+                        type: 'entity_spawn',
+                        data: entityData,
+                        clientId: otherInfo.clientId,
+                        timestamp: Date.now()
+                    });
+                    client.send(spawnMessage);
+                } else {
+                    // No entity data yet, send player_join so client knows they exist
+                    const joinMessage = JSON.stringify({
+                        type: 'player_join',
+                        data: {
+                            clientId: otherInfo.clientId,
+                            username: otherInfo.username
+                        },
+                        clientId: otherInfo.clientId,
+                        timestamp: Date.now()
+                    });
+                    client.send(joinMessage);
+                }
+            }
+        }
+    }
+
+    // Notify others in room about the new player
     broadcastToRoom(client, {
         type: 'player_join',
         data: {
@@ -121,6 +194,17 @@ function handleDisconnect(client) {
 
         // Notify others in room
         if (info) {
+            // Send entity_destroy so other clients remove the player
+            broadcastToRoom(client, {
+                type: 'entity_destroy',
+                data: {
+                    id: playerEntities.get(info.clientId)?.id,
+                    type: 'player'
+                },
+                clientId: info.clientId,
+                timestamp: Date.now()
+            });
+
             broadcastToRoom(client, {
                 type: 'player_leave',
                 data: {
@@ -130,6 +214,9 @@ function handleDisconnect(client) {
                 clientId: info.clientId,
                 timestamp: Date.now()
             });
+
+            // Clean up player entity data
+            playerEntities.delete(info.clientId);
         }
 
         // Clean up empty rooms

@@ -185,14 +185,15 @@ export class WorldManager {
         const offsetZ = cz * CONFIG.chunkSize;
         const centerX = offsetX + CONFIG.chunkSize / 2;
         const centerZ = offsetZ + CONFIG.chunkSize / 2;
-        const cityPresence = this.sampleCityInfluenceForChunk(offsetX, offsetZ);
 
-        // Determine urban biome type based on influence
-        const urbanBiome = getUrbanBiomeType(cityPresence);
+        // Use CENTER influence to determine consistent urban biome for entire chunk
+        // This prevents morphing between settlement types within the same area
+        const centerInfluence = getCityInfluence(centerX, centerZ);
+        const urbanBiome = getUrbanBiomeType(centerInfluence);
         const isUrban = urbanBiome !== null;
 
-        // Legacy compatibility
-        const isCity = isUrban || cityPresence >= CONFIG.cityInfluenceThreshold * 0.85;
+        // Determine if this chunk should generate city content based on center influence only
+        const isCity = isUrban;
         const colliders = [];
 
         const segments = 40;
@@ -201,6 +202,9 @@ export class WorldManager {
 
         const biome = biomeInfoAtPosition(offsetX, offsetZ);
 
+        // Determine the influence threshold for terrain flattening based on urban biome type
+        const flattenThreshold = urbanBiome ? urbanBiome.influenceThreshold : CONFIG.cityInfluenceThreshold;
+
         for (let i = 0; i < vertices.length; i += 3) {
             const localX = vertices[i];
             const localY = vertices[i + 1];
@@ -208,13 +212,12 @@ export class WorldManager {
             // Account for -90° rotation around X axis: Y becomes -Z
             const worldZ = offsetZ - localY + CONFIG.chunkSize / 2;
 
-            // Check if this vertex is in a city area
-            const cityInfluenceAtVertex = getCityInfluence(worldX, worldZ);
-
-            // COMPLETELY FLAT city terrain - no holes, no depressions
-            if (cityInfluenceAtVertex >= CONFIG.cityInfluenceThreshold) {
+            // If this is an urban chunk, flatten terrain consistently
+            if (isUrban) {
+                // For urban areas, use consistent flat terrain
                 vertices[i + 2] = CONFIG.cityPlateauHeight;
             } else {
+                // For non-urban areas, use natural terrain
                 vertices[i + 2] = getTerrainHeight(worldX, worldZ);
             }
         }
@@ -252,14 +255,15 @@ export class WorldManager {
     }
 
     generateCity(group, ox, oz, cx, cz, colliders, urbanBiome = null) {
-        // Use urban biome settings or fall back to defaults
-        const biomeConfig = urbanBiome || URBAN_BIOMES.city;
-        const blockSize = biomeConfig.blockSize || 65;
-        const roadWidth = biomeConfig.roadWidth || 20;
-        const buildingMinHeight = biomeConfig.buildingMinHeight || 20;
-        const buildingMaxHeight = biomeConfig.buildingMaxHeight || 100;
-        const buildingDensity = biomeConfig.buildingDensity || 0.75;
-        const parkChance = biomeConfig.parkChance || 0.18;
+        // Use urban biome settings - if no biome provided, this shouldn't be called
+        // but fall back to village (smallest) for safety rather than city
+        const biomeConfig = urbanBiome || URBAN_BIOMES.village;
+        const blockSize = biomeConfig.blockSize;
+        const roadWidth = biomeConfig.roadWidth;
+        const buildingMinHeight = biomeConfig.buildingMinHeight;
+        const buildingMaxHeight = biomeConfig.buildingMaxHeight;
+        const buildingDensity = biomeConfig.buildingDensity;
+        const parkChance = biomeConfig.parkChance;
         const sidewalkHeight = 0.15; // Curb height - small enough to step on
         const baseHeight = CONFIG.cityPlateauHeight;
 
@@ -996,15 +1000,22 @@ export class WorldManager {
             }
         }
 
-        if (Math.random() > 0.45) {
+        // Use seeded random for deterministic NPC spawning (same NPCs on all clients)
+        const npcSeed = cx * 10000 + cz * 100;
+        const npcRandom = (offset) => seededRandom(npcSeed + offset);
+
+        if (npcRandom(0) > 0.45) {
             const npc = new Character(false);
-            npc.params.hairColor = '#' + Math.floor(Math.random() * 16777215).toString(16).padStart(6, '0');
-            npc.params.jacketColor = '#' + Math.floor(Math.random() * 8388607).toString(16).padStart(6, '0');
+            // Use seeded colors so all clients see the same NPCs
+            const hairHue = Math.floor(npcRandom(1) * 16777215);
+            const jacketHue = Math.floor(npcRandom(2) * 8388607);
+            npc.params.hairColor = '#' + hairHue.toString(16).padStart(6, '0');
+            npc.params.jacketColor = '#' + jacketHue.toString(16).padStart(6, '0');
             npc.rebuild();
             npc.group.position.set(
-                ox + CONFIG.chunkSize / 2 + (Math.random() - 0.5) * 40,
+                ox + CONFIG.chunkSize / 2 + (npcRandom(3) - 0.5) * 40,
                 baseHeight + sidewalkHeight,
-                oz + CONFIG.chunkSize / 2 + (Math.random() - 0.5) * 40
+                oz + CONFIG.chunkSize / 2 + (npcRandom(4) - 0.5) * 40
             );
             group.add(npc.group);
             this.npcs.push(npc);

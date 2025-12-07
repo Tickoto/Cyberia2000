@@ -21,7 +21,13 @@ export class WarManager {
     // Set network manager for syncing units
     setNetworkManager(networkManager) {
         this.networkManager = networkManager;
-        this.isNetworkHost = networkManager?.isHost || false;
+        // Note: isHost is checked dynamically from networkManager to handle
+        // the case where host status is determined after connection
+    }
+
+    // Check if this client is the network host (dynamic check)
+    get isNetworkHost() {
+        return this.networkManager?.isHost || false;
     }
 
     // Get sync data for all units
@@ -59,16 +65,112 @@ export class WarManager {
                     unitData.rotationY,
                     0.3
                 );
+            } else {
+                // Create new unit from sync data (for non-host clients)
+                this.spawnSyncedUnit(unitData);
+            }
+        }
+
+        // Remove units that no longer exist on host
+        const syncedIds = new Set(data.map(u => u.id));
+        for (let i = this.units.length - 1; i >= 0; i--) {
+            if (!syncedIds.has(this.units[i].networkId)) {
+                this.scene.remove(this.units[i].mesh);
+                this.units.splice(i, 1);
             }
         }
     }
 
+    // Spawn a unit from network sync data (for non-host clients)
+    spawnSyncedUnit(data) {
+        const isHeli = data.unitType === 'heli';
+        const faction = FACTIONS[data.faction];
+        const group = new THREE.Group();
+
+        const colorMat = new THREE.MeshLambertMaterial({ color: faction.color });
+        const grayMat = new THREE.MeshLambertMaterial({ color: 0x333333 });
+
+        let rotor = null;
+
+        if (isHeli) {
+            const body = new THREE.Mesh(new THREE.BoxGeometry(3, 3, 8), colorMat);
+            group.add(body);
+
+            const tail = new THREE.Mesh(new THREE.BoxGeometry(1, 1, 6), colorMat);
+            tail.position.z = -5;
+            group.add(tail);
+
+            rotor = new THREE.Mesh(new THREE.BoxGeometry(14, 0.1, 0.8), grayMat);
+            rotor.position.y = 2;
+            group.add(rotor);
+
+            const tailRotor = new THREE.Mesh(new THREE.BoxGeometry(0.1, 2, 0.3), grayMat);
+            tailRotor.position.set(0, 0.5, -8);
+            group.add(tailRotor);
+        } else {
+            const body = new THREE.Mesh(new THREE.BoxGeometry(5, 2, 8), colorMat);
+            body.position.y = 1;
+            group.add(body);
+
+            const turret = new THREE.Mesh(new THREE.BoxGeometry(3, 1.2, 3), colorMat);
+            turret.position.y = 2.6;
+            group.add(turret);
+
+            const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.25, 0.25, 5, 8), grayMat);
+            barrel.rotation.x = Math.PI / 2;
+            barrel.position.set(0, 2.6, 4);
+            group.add(barrel);
+
+            const trackL = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.5, 8), grayMat);
+            trackL.position.set(2.5, 0.75, 0);
+            group.add(trackL);
+
+            const trackR = new THREE.Mesh(new THREE.BoxGeometry(1.2, 1.5, 8), grayMat);
+            trackR.position.set(-2.5, 0.75, 0);
+            group.add(trackR);
+        }
+
+        group.position.set(data.position.x, data.position.y, data.position.z);
+        group.rotation.y = data.rotationY || 0;
+
+        this.scene.add(group);
+
+        this.units.push({
+            mesh: group,
+            type: data.unitType,
+            faction: data.faction,
+            speed: data.speed || (isHeli ? 18 : 8),
+            rotor: rotor,
+            networkId: data.id
+        });
+    }
+
+    // Broadcast unit sync data to all clients (called by host)
+    broadcastUnitSync() {
+        if (!this.networkManager || !this.networkManager.isConnected) return;
+
+        const syncData = this.getUnitsSyncData();
+        this.networkManager.broadcast('unit_sync', {
+            units: syncData
+        });
+    }
+
     update(delta, playerPos) {
         this.spawnTimer += delta;
+        this.networkUpdateTimer += delta;
 
-        if (this.spawnTimer > 8 && this.units.length < 16) {
+        // Only host spawns new units
+        const canSpawn = !this.networkManager || this.isNetworkHost;
+
+        if (canSpawn && this.spawnTimer > 8 && this.units.length < 16) {
             this.spawnTimer = 0;
             this.spawnSkirmish(playerPos);
+        }
+
+        // Host broadcasts unit sync data periodically
+        if (this.networkManager && this.isNetworkHost && this.networkUpdateTimer >= this.networkUpdateInterval) {
+            this.networkUpdateTimer = 0;
+            this.broadcastUnitSync();
         }
 
         for (let i = this.units.length - 1; i >= 0; i--) {

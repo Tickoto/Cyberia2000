@@ -186,6 +186,14 @@ function initializeNetworking(username) {
         }
     };
 
+    // Handle unit sync messages from host
+    networkManager.registerMessageHandler('unit_sync', (data, clientId) => {
+        // Non-host clients receive and apply unit sync data
+        if (!networkManager.isHost && warManager && data.units) {
+            warManager.applyUnitsSyncData(data.units);
+        }
+    });
+
     // Try to connect
     networkManager.connect(CONFIG.networkServerUrl)
         .then(() => {
@@ -310,6 +318,9 @@ function registerLocalPlayer(username) {
     localPlayerEntity.syncProperties.appearance = { ...playerController.char.params };
 
     networkManager.registerEntity(localPlayerEntity);
+
+    // Connect war manager to network for unit syncing
+    warManager.setNetworkManager(networkManager);
 
     // Broadcast player join
     networkManager.broadcast(MessageType.PLAYER_JOIN, {
