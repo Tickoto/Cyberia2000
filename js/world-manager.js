@@ -1,5 +1,5 @@
-import { CONFIG } from './config.js';
-import { hash, seededRandom, getTerrainHeight, biomeInfoAtPosition, getCityInfluence } from './terrain.js';
+import { CONFIG, URBAN_BIOMES, getUrbanBiomeType } from './config.js';
+import { hash, seededRandom, getTerrainHeight, biomeInfoAtPosition, getCityInfluence, getUrbanBiomeAtPosition } from './terrain.js';
 import { createTexture } from './textures.js';
 import { Character } from './character.js';
 import { InteractionManager } from './interaction-manager.js';
@@ -186,7 +186,13 @@ export class WorldManager {
         const centerX = offsetX + CONFIG.chunkSize / 2;
         const centerZ = offsetZ + CONFIG.chunkSize / 2;
         const cityPresence = this.sampleCityInfluenceForChunk(offsetX, offsetZ);
-        const isCity = cityPresence >= CONFIG.cityInfluenceThreshold * 0.85;
+
+        // Determine urban biome type based on influence
+        const urbanBiome = getUrbanBiomeType(cityPresence);
+        const isUrban = urbanBiome !== null;
+
+        // Legacy compatibility
+        const isCity = isUrban || cityPresence >= CONFIG.cityInfluenceThreshold * 0.85;
         const colliders = [];
 
         const segments = 40;
@@ -234,7 +240,7 @@ export class WorldManager {
         const chunkKey = `${cx},${cz}`;
 
         if (isCity) {
-            this.generateCity(group, offsetX, offsetZ, cx, cz, colliders);
+            this.generateCity(group, offsetX, offsetZ, cx, cz, colliders, urbanBiome);
         } else {
             this.generateWilderness(group, offsetX, offsetZ, cx, cz, biome, colliders);
         }
@@ -245,9 +251,15 @@ export class WorldManager {
         return group;
     }
 
-    generateCity(group, ox, oz, cx, cz, colliders) {
-        const blockSize = 65;
-        const roadWidth = 20;
+    generateCity(group, ox, oz, cx, cz, colliders, urbanBiome = null) {
+        // Use urban biome settings or fall back to defaults
+        const biomeConfig = urbanBiome || URBAN_BIOMES.city;
+        const blockSize = biomeConfig.blockSize || 65;
+        const roadWidth = biomeConfig.roadWidth || 20;
+        const buildingMinHeight = biomeConfig.buildingMinHeight || 20;
+        const buildingMaxHeight = biomeConfig.buildingMaxHeight || 100;
+        const buildingDensity = biomeConfig.buildingDensity || 0.75;
+        const parkChance = biomeConfig.parkChance || 0.18;
         const sidewalkHeight = 0.15; // Curb height - small enough to step on
         const baseHeight = CONFIG.cityPlateauHeight;
 
@@ -269,6 +281,11 @@ export class WorldManager {
                 const blockRandom = (offset = 0) => seededRandom((gx + offset * 17.13) * 0.1337 + (gz - offset * 11.41) * 0.7331);
                 const blockRoll = blockRandom(1);
 
+                // Adjust roll thresholds based on urban biome type
+                const isVillage = biomeConfig.key === 'village';
+                const isTown = biomeConfig.key === 'town';
+                const isMegacity = biomeConfig.key === 'megacity';
+
                 const sidewalk = new THREE.Mesh(
                     new THREE.BoxGeometry(buildable + 8, sidewalkHeight, buildable + 8),
                     new THREE.MeshLambertMaterial({ color: 0x2f3033 })
@@ -280,8 +297,12 @@ export class WorldManager {
                 const sidewalkCollider = this.meshCollider(sidewalk, 0.01);
                 if (sidewalkCollider) colliders.push(sidewalkCollider);
 
-                if (blockRoll < 0.18) {
-                    // Park with trees and pond
+                // Use biome-specific park chance for block type selection
+                const adjustedParkChance = parkChance;
+                const adjustedBuildingThreshold = 1.0 - buildingDensity;
+
+                if (blockRoll < adjustedParkChance) {
+                    // Park with trees and pond (more common in villages)
                     const parkBase = new THREE.Mesh(
                         new THREE.BoxGeometry(buildable, 0.6, buildable),
                         new THREE.MeshLambertMaterial({ map: createTexture('grass', '#203320', 'city') })
@@ -630,11 +651,14 @@ export class WorldManager {
                         group.add(plaque);
                     }
                 } else {
-                    // Buildings (skyscrapers)
-                    const towerCount = 1 + Math.floor(blockRandom(60) * 2);
+                    // Buildings - height varies by urban biome type
+                    const towerCount = isMegacity ? 1 + Math.floor(blockRandom(60) * 3) :
+                                       isVillage ? 1 : 1 + Math.floor(blockRandom(60) * 2);
                     for (let i = 0; i < towerCount; i++) {
                         const footprint = buildable * (towerCount === 1 ? 1 : 0.55);
-                        const h = 70 + Math.abs(hash(gx * 0.75 + i, gz * 0.5 - i)) * 140;
+                        // Use biome-specific building heights
+                        const heightRange = buildingMaxHeight - buildingMinHeight;
+                        const h = buildingMinHeight + Math.abs(hash(gx * 0.75 + i, gz * 0.5 - i)) * heightRange;
                         const mat = new THREE.MeshLambertMaterial({
                             map: createTexture('concrete', '#3c3c3c')
                         });

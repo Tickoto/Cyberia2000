@@ -1,4 +1,4 @@
-import { FACTIONS } from './config.js';
+import { FACTIONS, CONFIG } from './config.js';
 import { getTerrainHeight } from './terrain.js';
 
 // ============================================
@@ -10,6 +10,57 @@ export class WarManager {
         this.units = [];
         this.projectiles = [];
         this.spawnTimer = 0;
+
+        // Network sync
+        this.networkManager = null;
+        this.isNetworkHost = false;
+        this.networkUpdateTimer = 0;
+        this.networkUpdateInterval = 0.1; // 10 times per second
+    }
+
+    // Set network manager for syncing units
+    setNetworkManager(networkManager) {
+        this.networkManager = networkManager;
+        this.isNetworkHost = networkManager?.isHost || false;
+    }
+
+    // Get sync data for all units
+    getUnitsSyncData() {
+        return this.units.map(unit => ({
+            id: unit.networkId || `unit_${this.units.indexOf(unit)}`,
+            position: {
+                x: unit.mesh.position.x,
+                y: unit.mesh.position.y,
+                z: unit.mesh.position.z
+            },
+            rotationY: unit.mesh.rotation.y,
+            faction: unit.faction,
+            unitType: unit.type,
+            speed: unit.speed
+        }));
+    }
+
+    // Apply sync data from network
+    applyUnitsSyncData(data) {
+        if (!data || !Array.isArray(data)) return;
+
+        for (const unitData of data) {
+            const existing = this.units.find(u => u.networkId === unitData.id);
+            if (existing) {
+                // Update existing unit position
+                const targetPos = new THREE.Vector3(
+                    unitData.position.x,
+                    unitData.position.y,
+                    unitData.position.z
+                );
+                existing.mesh.position.lerp(targetPos, 0.3);
+                existing.mesh.rotation.y = THREE.MathUtils.lerp(
+                    existing.mesh.rotation.y,
+                    unitData.rotationY,
+                    0.3
+                );
+            }
+        }
     }
 
     update(delta, playerPos) {
@@ -159,12 +210,17 @@ export class WarManager {
         }
 
         this.scene.add(group);
+
+        // Generate unique network ID for syncing
+        const networkId = `unit_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
         this.units.push({
             mesh: group,
             type: isHeli ? 'heli' : 'tank',
             faction: factionIndex,
             speed: isHeli ? 18 : 8,
-            rotor: rotor
+            rotor: rotor,
+            networkId: networkId
         });
     }
 
