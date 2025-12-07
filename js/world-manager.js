@@ -1157,6 +1157,27 @@ export class WorldManager {
         light.position.set(0, h - 2, 0);
         group.add(light);
 
+        const colliders = [];
+        const chunkKey = `${Math.floor(x / CONFIG.chunkSize)},${Math.floor(z / CONFIG.chunkSize)}`;
+
+        colliders.push(new THREE.Box3().setFromCenterAndSize(
+            new THREE.Vector3(x, y - 0.25, z),
+            new THREE.Vector3(w, 0.5, d)
+        ));
+
+        colliders.push(new THREE.Box3().setFromCenterAndSize(
+            new THREE.Vector3(x, y + h + 0.25, z),
+            new THREE.Vector3(w, 0.5, d)
+        ));
+
+        walls.forEach(cfg => {
+            const worldPos = new THREE.Vector3(cfg.pos[0] + x, cfg.pos[1] + y, cfg.pos[2] + z);
+            const size = new THREE.Vector3(cfg.dim[0], cfg.dim[1], cfg.dim[2]);
+            colliders.push(new THREE.Box3().setFromCenterAndSize(worldPos, size));
+        });
+
+        this.physics.addChunkColliders(chunkKey, colliders);
+
         this.scene.add(group);
         this.interiors[key] = group;
     }
