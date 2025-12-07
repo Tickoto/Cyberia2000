@@ -8,7 +8,8 @@ export class PhysicsSystem {
         this._scratch = {
             gravity: new THREE.Vector3(0, -CONFIG.gravity, 0),
             horizontal: new THREE.Vector3(),
-            normal: new THREE.Vector3()
+            normal: new THREE.Vector3(),
+            tempNormal: new THREE.Vector3(0, 1, 0)
         };
     }
 
@@ -64,7 +65,7 @@ export class PhysicsSystem {
     }
 
     integrate(body, delta, terrainSampler) {
-        const { gravity, horizontal, normal } = this._scratch;
+        const { gravity, horizontal, tempNormal } = this._scratch;
         body.velocity.addScaledVector(gravity, delta);
 
         body.velocity.x *= 1 - body.damping * delta;
@@ -78,15 +79,23 @@ export class PhysicsSystem {
         body.position.addScaledVector(body.velocity, delta);
 
         const colliders = this.getNearbyColliders(body.position);
-        this.resolveCollisions(body, colliders);
+        const collisionInfo = this.resolveCollisions(body, colliders);
 
-        const groundInfo = this.sampleGround(body.position, terrainSampler);
-        body.groundNormal.copy(groundInfo.normal);
+        const colliderGround = this.groundCast(body.position, body.height, colliders);
+        const terrainGround = this.sampleGround(body.position, terrainSampler);
+        const useColliderNormal = colliderGround && colliderGround.point.y >= terrainGround.height - 0.01;
 
-        const groundHeight = groundInfo.height;
+        const groundHeight = colliderGround
+            ? Math.max(terrainGround.height, colliderGround.point.y)
+            : terrainGround.height;
+        const groundNormal = useColliderNormal ? tempNormal : terrainGround.normal;
+
+        body.groundNormal.copy(groundNormal);
         const desiredHeight = groundHeight + 0.05;
         const penetration = desiredHeight - body.position.y;
         const movingDownward = body.velocity.y < 0;
+
+        body.grounded = collisionInfo.onGround;
 
         if (penetration > 0) {
             body.position.y += penetration;
@@ -94,13 +103,13 @@ export class PhysicsSystem {
             body.velocity.y = vertical < 0 ? 0 : Math.min(vertical, 1.5);
 
             horizontal.set(body.velocity.x, 0, body.velocity.z);
-            const slide = this.projectOntoPlane(horizontal, groundInfo.normal);
+            const slide = this.projectOntoPlane(horizontal, groundNormal);
             body.velocity.x = slide.x * Math.max(0, 1 - body.friction * delta);
             body.velocity.z = slide.z * Math.max(0, 1 - body.friction * delta);
             body.grounded = true;
 
             if (vertical < -1 && body.bounciness > 0) {
-                body.velocity.addScaledVector(groundInfo.normal, -vertical * body.bounciness * 0.25);
+                body.velocity.addScaledVector(groundNormal, -vertical * body.bounciness * 0.25);
             }
         } else if (penetration > -CONFIG.stepHeight && movingDownward) {
             body.position.y += Math.max(penetration, 0);
@@ -110,8 +119,6 @@ export class PhysicsSystem {
             body.position.y = THREE.MathUtils.lerp(body.position.y, desiredHeight, 0.35);
             body.velocity.y = Math.max(body.velocity.y, -2.5);
             body.grounded = true;
-        } else {
-            body.grounded = false;
         }
 
         this.applyVolumes(body, delta);
@@ -131,6 +138,31 @@ export class PhysicsSystem {
         return { height: h, normal };
     }
 
+    groundCast(position, capsuleHeight, colliders) {
+        if (!colliders?.length) return null;
+        const origin = position.clone();
+        origin.y += (capsuleHeight || 0) * 0.5;
+        let closest = null;
+
+        for (const box of colliders) {
+            if (origin.x < box.min.x || origin.x > box.max.x) continue;
+            if (origin.z < box.min.z || origin.z > box.max.z) continue;
+            if (origin.y < box.min.y) continue;
+
+            const distance = origin.y - box.max.y;
+            if (distance < 0) continue;
+
+            if (!closest || distance < closest.distance) {
+                closest = {
+                    point: new THREE.Vector3(origin.x, box.max.y, origin.z),
+                    distance
+                };
+            }
+        }
+
+        return closest;
+    }
+
     applyVolumes(body, delta) {
         this.dynamicVolumes.forEach(volume => {
             if (volume.box.containsPoint(body.position)) {
@@ -142,42 +174,56 @@ export class PhysicsSystem {
     resolveCollisions(body, colliders) {
         const radius = body.radius || 0.5;
         const height = body.height || 1.6;
-        const bodyTop = body.position.y + height;
+
+        let capsule = new THREE.Box3(
+            new THREE.Vector3(body.position.x - radius, body.position.y, body.position.z - radius),
+            new THREE.Vector3(body.position.x + radius, body.position.y + height, body.position.z + radius)
+        );
+
+        let onGround = false;
+        const capsuleCenter = new THREE.Vector3();
+        const colliderCenter = new THREE.Vector3();
 
         for (const box of colliders) {
-            if (body.position.y > box.max.y || bodyTop < box.min.y) continue;
+            if (!capsule.intersectsBox(box)) continue;
 
-            const closestX = Math.max(box.min.x, Math.min(body.position.x, box.max.x));
-            const closestZ = Math.max(box.min.z, Math.min(body.position.z, box.max.z));
+            const overlapX = Math.min(capsule.max.x, box.max.x) - Math.max(capsule.min.x, box.min.x);
+            const overlapY = Math.min(capsule.max.y, box.max.y) - Math.max(capsule.min.y, box.min.y);
+            const overlapZ = Math.min(capsule.max.z, box.max.z) - Math.max(capsule.min.z, box.min.z);
 
-            const dx = body.position.x - closestX;
-            const dz = body.position.z - closestZ;
-            const distSq = dx * dx + dz * dz;
+            if (overlapX <= 0 || overlapY <= 0 || overlapZ <= 0) continue;
 
-            if (distSq < radius * radius && distSq > 0.0001) {
-                const dist = Math.sqrt(distSq);
-                const push = radius - dist;
-                const nx = dx / dist;
-                const nz = dz / dist;
+            const minPenetration = Math.min(overlapX, overlapY, overlapZ);
+            capsule.getCenter(capsuleCenter);
+            box.getCenter(colliderCenter);
 
-                body.position.x += nx * push;
-                body.position.z += nz * push;
+            const canStep = (box.max.y - body.position.y) <= CONFIG.stepHeight && (body.position.y + height) > box.min.y;
 
-                if (body.velocity) {
-                    const normal = new THREE.Vector3(nx, 0, nz);
-                    const tangent = this.projectOntoPlane(body.velocity.clone(), normal);
-                    body.velocity.copy(tangent.multiplyScalar(0.65));
-                }
-            } else if (distSq <= 0.0001 && radius > 0) {
-                body.position.z += radius * 0.5;
+            if ((minPenetration === overlapX || minPenetration === overlapZ) && canStep) {
+                body.position.y = box.max.y;
+                if (body.velocity.y < 0) body.velocity.y = 0;
+                onGround = true;
+            } else if (minPenetration === overlapX) {
+                const dir = Math.sign(capsuleCenter.x - colliderCenter.x) || 1;
+                body.position.x += overlapX * dir;
+                body.velocity.x = 0;
+            } else if (minPenetration === overlapZ) {
+                const dir = Math.sign(capsuleCenter.z - colliderCenter.z) || 1;
+                body.position.z += overlapZ * dir;
+                body.velocity.z = 0;
+            } else {
+                const dir = Math.sign(capsuleCenter.y - colliderCenter.y) || 1;
+                body.position.y += overlapY * dir;
+                if (dir > 0) onGround = true;
+                if (body.velocity.y * dir < 0) body.velocity.y = 0;
             }
 
-            const slopeNormal = new THREE.Vector3(0, 1, 0);
-            const dot = slopeNormal.dot(new THREE.Vector3(0, 1, 0));
-            if (dot < body.slopeLimit && body.grounded) {
-                body.velocity.x *= 0.5;
-                body.velocity.z *= 0.5;
-            }
+            capsule = new THREE.Box3(
+                new THREE.Vector3(body.position.x - radius, body.position.y, body.position.z - radius),
+                new THREE.Vector3(body.position.x + radius, body.position.y + height, body.position.z + radius)
+            );
         }
+
+        return { onGround };
     }
 }
