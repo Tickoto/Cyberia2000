@@ -16,6 +16,16 @@ export class WorldManager {
         this.interactionManager.setHeightSampler((x, z) => getTerrainHeight(x, z));
     }
 
+    meshCollider(mesh, padding = 0.01) {
+        if (!mesh?.isMesh) return null;
+        mesh.updateWorldMatrix(true, false);
+        const box = new THREE.Box3().setFromObject(mesh);
+        if (padding > 0) {
+            box.expandByVector(new THREE.Vector3(padding, padding, padding));
+        }
+        return box;
+    }
+
     update(playerPos, delta) {
         const cx = Math.floor(playerPos.x / CONFIG.chunkSize);
         const cz = Math.floor(playerPos.z / CONFIG.chunkSize);
@@ -218,6 +228,9 @@ export class WorldManager {
         ground.receiveShadow = true;
         group.add(ground);
 
+        const groundCollider = this.meshCollider(ground, 0.02);
+        if (groundCollider) colliders.push(groundCollider);
+
         const chunkKey = `${cx},${cz}`;
 
         if (isCity) {
@@ -264,10 +277,8 @@ export class WorldManager {
                 group.add(sidewalk);
 
                 // Add sidewalk collider so players can walk on it
-                colliders.push(new THREE.Box3().setFromCenterAndSize(
-                    new THREE.Vector3(centerX, baseHeight + sidewalkHeight / 2, centerZ),
-                    new THREE.Vector3(buildable + 8, sidewalkHeight, buildable + 8)
-                ));
+                const sidewalkCollider = this.meshCollider(sidewalk, 0.01);
+                if (sidewalkCollider) colliders.push(sidewalkCollider);
 
                 if (blockRoll < 0.18) {
                     // Park with trees and pond
@@ -311,10 +322,8 @@ export class WorldManager {
                             centerZ + Math.sin(i * Math.PI / 2) * (buildable * 0.35)
                         );
                         group.add(bench);
-                        colliders.push(new THREE.Box3().setFromCenterAndSize(
-                            bench.position.clone(),
-                            new THREE.Vector3(6, 1, 2)
-                        ));
+                        const benchCollider = this.meshCollider(bench, 0.01);
+                        if (benchCollider) colliders.push(benchCollider);
                     }
 
                     const pond = new THREE.Mesh(
@@ -639,11 +648,8 @@ export class WorldManager {
                         building.castShadow = true;
                         group.add(building);
 
-                        const collider = new THREE.Box3().setFromCenterAndSize(
-                            new THREE.Vector3(centerX + offset, baseHeight + sidewalkHeight + h / 2, centerZ + offset),
-                            new THREE.Vector3(footprint, h, footprint)
-                        );
-                        colliders.push(collider);
+                        const buildingCollider = this.meshCollider(building, 0.02);
+                        if (buildingCollider) colliders.push(buildingCollider);
 
                         const doorMat = new THREE.MeshLambertMaterial({
                             map: createTexture('door', '#555')
@@ -845,10 +851,8 @@ export class WorldManager {
                     centerZ + buildable / 2 - 1.5
                 );
                 group.add(trashCan);
-                colliders.push(new THREE.Box3().setFromCenterAndSize(
-                    trashCan.position.clone(),
-                    new THREE.Vector3(1.8, 2.5, 1.8)
-                ));
+                const trashCollider = this.meshCollider(trashCan, 0.01);
+                if (trashCollider) colliders.push(trashCollider);
 
                 const hydrant = new THREE.Mesh(
                     new THREE.CylinderGeometry(0.6, 0.7, 2, 6),
@@ -860,10 +864,8 @@ export class WorldManager {
                     centerZ - buildable / 2 + 1.5
                 );
                 group.add(hydrant);
-                colliders.push(new THREE.Box3().setFromCenterAndSize(
-                    hydrant.position.clone(),
-                    new THREE.Vector3(1.4, 2, 1.4)
-                ));
+                const hydrantCollider = this.meshCollider(hydrant, 0.01);
+                if (hydrantCollider) colliders.push(hydrantCollider);
             }
         }
 
@@ -887,6 +889,9 @@ export class WorldManager {
                 road.position.set(roadCenterX, baseHeight + 0.005, roadCenterZ);
                 road.receiveShadow = true;
                 group.add(road);
+
+                const roadCollider = this.meshCollider(road, 0.01);
+                if (roadCollider) colliders.push(roadCollider);
 
                 // Add center lane marking
                 const centerLine = new THREE.Mesh(
@@ -935,6 +940,9 @@ export class WorldManager {
                 road.position.set(roadCenterX, baseHeight + 0.005, roadCenterZ);
                 road.receiveShadow = true;
                 group.add(road);
+
+                const roadCollider = this.meshCollider(road, 0.01);
+                if (roadCollider) colliders.push(roadCollider);
 
                 // Add center lane marking
                 const centerLine = new THREE.Mesh(
