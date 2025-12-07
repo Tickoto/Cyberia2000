@@ -197,4 +197,24 @@ export class InteractionManager {
             itemAdded
         };
     }
+
+    // Network sync method for receiving state from other clients
+    syncObjectState(objectId, state) {
+        if (!state) return;
+
+        // Sync cooldown state
+        if (state.cooldownUntil !== undefined) {
+            const cooldownKey = objectId;
+            this.cooldowns.set(cooldownKey, state.cooldownUntil);
+        }
+    }
+
+    // Get current state for syncing to other clients
+    getObjectState(target) {
+        const cooldownKey = `${target.def.id}_${target.seed}`;
+        return {
+            objectId: cooldownKey,
+            cooldownUntil: this.cooldowns.get(cooldownKey) || 0
+        };
+    }
 }

@@ -1,4 +1,4 @@
-import { CONFIG, BIOMES, CITY_BIOME } from './config.js';
+import { CONFIG, BIOMES, CITY_BIOME, URBAN_BIOMES, getUrbanBiomeType } from './config.js';
 import { evaluateCityHeight } from './city-terrain-regulator.js';
 
 function lerp(a, b, t) {
@@ -120,6 +120,14 @@ function zoneField(wx, wz) {
 
 function blendedBiome(wx, wz) {
     const cityInfluence = getCityInfluence(wx, wz);
+
+    // Check for urban biomes based on influence intensity
+    const urbanBiome = getUrbanBiomeType(cityInfluence);
+    if (urbanBiome) {
+        return urbanBiome;
+    }
+
+    // Legacy fallback for backward compatibility
     if (cityInfluence >= CONFIG.cityInfluenceThreshold * 0.85) {
         return CITY_BIOME;
     }
@@ -238,18 +246,47 @@ export function getTerrainHeight(wx, wz) {
     const cityInfluence = getCityInfluence(wx, wz);
     const cityProfile = evaluateCityHeight(wx, wz);
 
-    // If we are clearly inside a city block, completely flatten the terrain using the blueprint
+    // Get the appropriate urban biome based on influence
+    const urbanBiome = getUrbanBiomeType(cityInfluence);
+
+    // If we're in an urban biome, apply appropriate flattening
+    if (urbanBiome) {
+        const threshold = urbanBiome.influenceThreshold || CONFIG.cityInfluenceThreshold;
+
+        // If we are clearly inside an urban block, completely flatten the terrain
+        if (cityInfluence >= threshold && cityProfile.forcePlateau) {
+            return CONFIG.cityPlateauHeight;
+        }
+
+        // Calculate blend factor based on urban biome type
+        // Larger settlements (megacity/city) have stronger flattening
+        const flatteningStrength = urbanBiome.key === 'megacity' ? 1.5 :
+                                   urbanBiome.key === 'city' ? 1.35 :
+                                   urbanBiome.key === 'town' ? 1.2 : 1.0;
+
+        const plateauBlend = Math.min(1, cityProfile.blend * (cityInfluence * flatteningStrength));
+        if (plateauBlend > 0) {
+            return lerp(naturalHeight, CONFIG.cityPlateauHeight, plateauBlend);
+        }
+    }
+
+    // Legacy fallback
     if (cityInfluence >= CONFIG.cityInfluenceThreshold && cityProfile.forcePlateau) {
         return CONFIG.cityPlateauHeight;
     }
 
-    // Blend toward the plateau using both the blueprint weight and the sampled influence
     const plateauBlend = Math.min(1, cityProfile.blend * (cityInfluence * 1.35));
     if (plateauBlend > 0) {
         return lerp(naturalHeight, CONFIG.cityPlateauHeight, plateauBlend);
     }
 
     return naturalHeight;
+}
+
+// Export function to get urban biome info at position
+export function getUrbanBiomeAtPosition(wx, wz) {
+    const cityInfluence = getCityInfluence(wx, wz);
+    return getUrbanBiomeType(cityInfluence);
 }
 
 export function biomeInfoAtPosition(wx, wz) {

@@ -5,6 +5,9 @@ import { PhysicsSystem } from './physics.js';
 import { EnvironmentSystem } from './environment.js';
 import { initCharCreator, logChat, setGender, updateMinimap } from './ui.js';
 import { playerInventory, inventoryUI } from './inventory.js';
+import { CONFIG } from './config.js';
+import { networkManager, NetworkPlayer, NetworkEntityType, MessageType } from './network-manager.js';
+import { Character } from './character.js';
 
 let scene, camera, renderer, clock;
 let playerController, worldManager, warManager, physics, environment;
@@ -12,6 +15,10 @@ let isGameActive = false;
 let previewChar;
 const keys = {};
 const mouse = { x: 0, y: 0 };
+
+// Remote players
+const remotePlayers = new Map(); // networkId -> { character, networkEntity }
+let localPlayerEntity = null;
 
 function init() {
     scene = new THREE.Scene();
@@ -68,6 +75,12 @@ function init() {
                 if (input.value.trim()) {
                     const username = document.getElementById('cc-username').value || 'Player';
                     logChat(username, input.value);
+
+                    // Send chat over network
+                    if (CONFIG.networkEnabled && networkManager.isConnected) {
+                        networkManager.sendChat(input.value, username);
+                    }
+
                     input.value = '';
                 }
                 input.blur();
@@ -131,7 +144,195 @@ function startGame() {
     logChat('System', 'Press [I] to open inventory, [E] to interact with objects.');
     logChat('WarNet', 'ALERT: Combat detected in multiple sectors.');
 
+    // Initialize networking if enabled
+    if (CONFIG.networkEnabled) {
+        initializeNetworking(username);
+    }
+
     gameLoop();
+}
+
+function initializeNetworking(username) {
+    // Set up entity handlers
+    setupNetworkEntityHandlers();
+
+    // Set up callbacks
+    networkManager.onConnected = () => {
+        logChat('System', 'Connected to multiplayer server!');
+        // Register local player
+        registerLocalPlayer(username);
+    };
+
+    networkManager.onDisconnected = () => {
+        logChat('System', 'Disconnected from multiplayer server.');
+        // Clean up remote players
+        for (const [id, data] of remotePlayers) {
+            scene.remove(data.character.group);
+        }
+        remotePlayers.clear();
+    };
+
+    networkManager.onPlayerJoined = (data, clientId) => {
+        logChat('System', `${data.username || 'Player'} joined the game.`);
+    };
+
+    networkManager.onPlayerLeft = (data, clientId) => {
+        logChat('System', `${data.username || 'Player'} left the game.`);
+    };
+
+    networkManager.onChatMessage = (data, clientId) => {
+        if (clientId !== networkManager.clientId) {
+            logChat(data.username || 'Player', data.message);
+        }
+    };
+
+    // Try to connect
+    networkManager.connect(CONFIG.networkServerUrl)
+        .then(() => {
+            logChat('System', 'Multiplayer: Attempting connection...');
+        })
+        .catch((error) => {
+            logChat('System', 'Multiplayer: Running in offline mode.');
+            console.log('Network connection failed:', error);
+        });
+}
+
+function setupNetworkEntityHandlers() {
+    // Player entity handler
+    networkManager.registerEntityHandler(NetworkEntityType.PLAYER, {
+        spawn: (data, clientId) => {
+            // Don't spawn ourselves
+            if (clientId === networkManager.clientId) return null;
+
+            // Create remote player character
+            const character = new Character(false);
+            if (data.appearance) {
+                character.params = { ...character.params, ...data.appearance };
+                character.rebuild();
+            }
+
+            // Set initial position
+            if (data.position) {
+                character.group.position.set(data.position.x, data.position.y, data.position.z);
+            }
+            if (data.rotationY !== undefined) {
+                character.group.rotation.y = data.rotationY;
+            }
+
+            scene.add(character.group);
+
+            // Create network entity
+            const entity = new NetworkPlayer(data.id);
+            entity.applySyncData(data);
+
+            // Store reference
+            remotePlayers.set(data.id, { character, networkEntity: entity });
+
+            logChat('System', `${data.username || 'Player'} appeared nearby.`);
+
+            return entity;
+        },
+
+        update: (entity, data, timestamp) => {
+            const playerData = remotePlayers.get(entity.networkId);
+            if (!playerData) return;
+
+            // Interpolate position
+            if (data.position) {
+                const targetPos = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+                playerData.character.group.position.lerp(targetPos, 0.3);
+            }
+
+            // Update rotation
+            if (data.rotationY !== undefined) {
+                playerData.character.group.rotation.y = THREE.MathUtils.lerp(
+                    playerData.character.group.rotation.y,
+                    data.rotationY,
+                    0.3
+                );
+            }
+
+            // Update animation
+            if (data.animationSpeed !== undefined) {
+                playerData.character.animate(data.animationSpeed);
+            }
+
+            entity.applySyncData(data);
+        },
+
+        destroy: (entity) => {
+            const playerData = remotePlayers.get(entity.networkId);
+            if (playerData) {
+                scene.remove(playerData.character.group);
+                remotePlayers.delete(entity.networkId);
+            }
+        }
+    });
+
+    // Unit entity handler for war manager units
+    networkManager.registerEntityHandler(NetworkEntityType.UNIT, {
+        spawn: (data, clientId) => {
+            // Let host control units
+            if (networkManager.isHost) return null;
+            // Remote clients could sync units here if needed
+            return null;
+        },
+        update: (entity, data, timestamp) => {
+            // Unit sync updates handled here
+        },
+        destroy: (entity) => {
+            // Unit destruction handled here
+        }
+    });
+
+    // Object entity handler for interactive objects
+    networkManager.registerEntityHandler(NetworkEntityType.OBJECT, {
+        spawn: (data, clientId) => {
+            // Objects are seeded, so we don't spawn them from network
+            return null;
+        },
+        update: (entity, data, timestamp) => {
+            // Sync object state (cooldowns, etc)
+            if (worldManager && worldManager.interactionManager) {
+                worldManager.interactionManager.syncObjectState(data.objectId, data.state);
+            }
+        },
+        destroy: (entity) => {
+            // Object destruction
+        }
+    });
+}
+
+function registerLocalPlayer(username) {
+    // Create and register local player entity
+    localPlayerEntity = new NetworkPlayer();
+    localPlayerEntity.syncProperties.username = username;
+    localPlayerEntity.syncProperties.appearance = { ...playerController.char.params };
+
+    networkManager.registerEntity(localPlayerEntity);
+
+    // Broadcast player join
+    networkManager.broadcast(MessageType.PLAYER_JOIN, {
+        username: username,
+        appearance: playerController.char.params
+    });
+}
+
+function updateNetworkPlayerState() {
+    if (!localPlayerEntity || !networkManager.isConnected) return;
+
+    const pos = playerController.char.group.position;
+    const rot = playerController.char.group.rotation.y;
+    const vel = playerController.physicsBody.velocity;
+    const animSpeed = vel.length();
+
+    // Queue update for batched sending
+    networkManager.queueEntityUpdate(localPlayerEntity.networkId, {
+        type: NetworkEntityType.PLAYER,
+        position: { x: pos.x, y: pos.y, z: pos.z },
+        rotationY: rot,
+        animationSpeed: animSpeed
+    });
 }
 
 function gameLoop() {
@@ -145,6 +346,12 @@ function gameLoop() {
         warManager.update(delta, playerController.char.group.position);
         environment.update(delta, playerController.char.group.position);
         updateMinimap(playerController, worldManager, warManager);
+
+        // Network updates
+        if (CONFIG.networkEnabled && networkManager.isConnected) {
+            updateNetworkPlayerState();
+            networkManager.update(delta);
+        }
     }
 
     renderer.render(scene, camera);
