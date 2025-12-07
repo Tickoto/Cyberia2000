@@ -13,7 +13,6 @@ export class WarManager {
 
         // Network sync
         this.networkManager = null;
-        this.isNetworkHost = false;
         this.networkUpdateTimer = 0;
         this.networkUpdateInterval = 0.1; // 10 times per second
     }

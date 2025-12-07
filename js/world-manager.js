@@ -227,7 +227,7 @@ export class WorldManager {
 
         const groundMat = isCity
             ? new THREE.MeshLambertMaterial({ map: createTexture('asphalt', '#111') })
-            : cityPresence >= 0.25
+            : centerInfluence >= 0.25
                 ? new THREE.MeshLambertMaterial({ map: createTexture('asphalt', '#111') })
                 : new THREE.MeshLambertMaterial({ map: createTexture('grass', biome.primaryColor, biome.key) });
 

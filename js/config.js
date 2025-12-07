@@ -33,7 +33,7 @@ export const CONFIG = {
     cameraLag: 0.35,
 
     // Networking
-    networkServerUrl: 'ws://localhost:8080',
+    networkServerUrl: 'ws://192.168.1.2:8080',
     networkUpdateRate: 50,           // ms between network updates
     networkInterpolationDelay: 100,  // ms delay for smooth interpolation
     networkEnabled: true
