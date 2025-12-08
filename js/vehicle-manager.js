@@ -68,12 +68,15 @@ export class VehicleManager {
         if (data.heading !== undefined) {
             vehicle.heading = THREE.MathUtils.lerp(vehicle.heading, data.heading, 0.4);
         }
-        if (data.rotation) {
-            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, data.rotation.x, 0.3);
-            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, data.rotation.z, 0.3);
+        // Apply tilt for visual rotation
+        if (data.tiltX !== undefined) {
+            vehicle.tiltX = data.tiltX;
+            vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, data.rotation?.x || 0, 0.3);
         }
-        if (data.tiltX !== undefined) vehicle.tiltX = data.tiltX;
-        if (data.tiltZ !== undefined) vehicle.tiltZ = data.tiltZ;
+        if (data.tiltZ !== undefined) {
+            vehicle.tiltZ = data.tiltZ;
+            vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, data.rotation?.z || 0, 0.3);
+        }
         if (data.targetAltitude !== undefined) vehicle.targetAltitude = data.targetAltitude;
     }
 
@@ -110,8 +113,9 @@ export class VehicleManager {
         })).filter(o => o.occupantId);
 
         this.networkManager.queueEntityUpdate(vehicle.networkId, {
+            type: 'vehicle', // Include entity type for relay server tracking
             position: { x: vehicle.body.position.x, y: vehicle.body.position.y, z: vehicle.body.position.z },
-            rotation: { x: vehicle.mesh.rotation.x, y: vehicle.mesh.rotation.y, z: vehicle.mesh.rotation.z },
+            rotation: { x: vehicle.tilt.x, y: vehicle.heading, z: vehicle.tilt.z },
             velocity: { x: vehicle.body.velocity.x, y: vehicle.body.velocity.y, z: vehicle.body.velocity.z },
             vehicleType: vehicle.type,
             heading: vehicle.heading,
@@ -435,9 +439,14 @@ export class VehicleManager {
                     this.updateHelicopter(vehicle, delta);
                 }
             } else {
-                // For remote vehicles, just update the mesh position from physics body
+                // For remote vehicles, update mesh from network state
                 vehicle.mesh.position.copy(vehicle.body.position);
-                vehicle.mesh.rotation.y = vehicle.heading;
+                // Apply full rotation with YXZ order for proper tilt display
+                vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
+                // Spin rotor for helicopters
+                if (vehicle.type === 'helicopter' && vehicle.rotor) {
+                    vehicle.rotor.rotation.y += delta * 15;
+                }
             }
 
             vehicle.weaponCooldown = Math.max(0, vehicle.weaponCooldown - delta);
@@ -645,7 +654,7 @@ export class VehicleManager {
             const cosY = Math.cos(vehicle.heading);
             const sinY = Math.sin(vehicle.heading);
 
-            // Forward vector based on heading (in Three.js, default forward is -Z)
+            // Forward vector based on heading
             const forward = new THREE.Vector3(sinY, 0, cosY);
             const right = new THREE.Vector3(cosY, 0, -sinY);
 
@@ -678,10 +687,14 @@ export class VehicleManager {
                 body.velocity.z *= scale;
             }
 
-            // Visual tilt - nose pitches down when moving forward
-            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, delta * 6);
-            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, -vehicle.tiltZ, delta * 6);
-            vehicle.mesh.rotation.y = vehicle.heading;
+            // Visual tilt - use YXZ Euler order so pitch/roll are relative to helicopter's heading
+            // tiltX > 0 = nose pitches DOWN (forward lean when moving forward)
+            // tiltZ > 0 = roll right, so we negate for proper visual
+            const targetPitch = -vehicle.tiltX;  // Negative because +tiltX = forward = nose down
+            const targetRoll = -vehicle.tiltZ;
+            vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, targetPitch, delta * 6);
+            vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, targetRoll, delta * 6);
+            vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
 
         } else {
             // --- UNMANNED PHYSICS (falling/crashing) ---
@@ -695,10 +708,10 @@ export class VehicleManager {
             body.velocity.x *= 0.995;
             body.velocity.z *= 0.995;
 
-            // Auto-level slowly
-            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, 0, delta * 0.5);
-            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, 0, delta * 0.5);
-            vehicle.mesh.rotation.y = vehicle.heading;
+            // Auto-level slowly using YXZ order
+            vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, 0, delta * 0.5);
+            vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, 0, delta * 0.5);
+            vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
         }
 
         vehicle.mesh.position.copy(body.position);
