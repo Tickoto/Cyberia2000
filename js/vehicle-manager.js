@@ -688,10 +688,10 @@ export class VehicleManager {
             }
 
             // Visual tilt - use YXZ Euler order so pitch/roll are relative to helicopter's heading
-            // tiltX > 0 = nose pitches DOWN (forward lean when moving forward)
-            // tiltZ > 0 = roll right, so we negate for proper visual
-            const targetPitch = -vehicle.tiltX;  // Negative because +tiltX = forward = nose down
-            const targetRoll = -vehicle.tiltZ;
+            // tiltX > 0 = pitched forward (nose down) when moving forward
+            // tiltZ > 0 = roll right
+            const targetPitch = vehicle.tiltX;   // Positive tiltX = nose pitches down
+            const targetRoll = vehicle.tiltZ;    // Positive tiltZ = roll right
             vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, targetPitch, delta * 6);
             vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, targetRoll, delta * 6);
             vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');

@@ -151,7 +151,13 @@ function startGame() {
     const spawn = worldManager.findCitySpawnPoint();
     playerController.char.group.position.set(spawn.x, spawn.y, spawn.z);
     playerController.physicsBody.velocity.set(0, 0, 0);
-    vehicleManager.spawnStartingVehicles(spawn);
+
+    // Only spawn vehicles if networking is disabled (offline mode)
+    // If networking is enabled, vehicles are spawned after connection is established
+    // to ensure only the host spawns them and clients receive them via network
+    if (!CONFIG.networkEnabled) {
+        vehicleManager.spawnStartingVehicles(spawn);
+    }
 
     isGameActive = true;
     document.body.requestPointerLock();
@@ -342,13 +348,15 @@ function registerLocalPlayer(username) {
     // Connect vehicle manager to network for vehicle syncing
     vehicleManager.setNetworkManager(networkManager);
 
-    // If we're the host, register existing vehicles with the network
+    // If we're the host, spawn and register vehicles
+    // Non-host clients will receive vehicle spawn events from the server
     if (networkManager.isHost) {
-        for (const vehicle of vehicleManager.vehicles) {
-            if (!vehicle.networkId) {
-                vehicleManager.registerVehicleNetwork(vehicle);
-            }
-        }
+        // Use player's current position as spawn origin for vehicles
+        const spawnOrigin = playerController.char.group.position.clone();
+        vehicleManager.spawnStartingVehicles(spawnOrigin, true);
+        logChat('System', 'Vehicles spawned and synced to network.');
+    } else {
+        logChat('System', 'Waiting for vehicle sync from host...');
     }
 
     // Broadcast player join
