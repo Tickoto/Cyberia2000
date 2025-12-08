@@ -328,7 +328,14 @@ export class VehicleManager {
         const body = vehicle.body;
         vehicle.rotor.rotation.y += delta * 15;
         const ground = getTerrainHeight(body.position.x, body.position.z);
-        const minAltitude = ground + 1.6;
+        const minAltitude = ground + 0.8;
+        const hasPilot = vehicle.seats.some(seat => seat.role === 'pilot' && seat.occupant);
+
+        if (!hasPilot) {
+            vehicle.targetAltitude = THREE.MathUtils.lerp(vehicle.targetAltitude, minAltitude, 0.25);
+            vehicle.lift = THREE.MathUtils.lerp(vehicle.lift, -2, 0.5 * delta);
+        }
+
         vehicle.targetAltitude = Math.max(vehicle.targetAltitude, minAltitude);
 
         const climb = (vehicle.targetAltitude - body.position.y) * 0.65;
@@ -344,9 +351,14 @@ export class VehicleManager {
         }
 
         vehicle.mesh.position.copy(body.position);
-        vehicle.mesh.rotation.y = vehicle.heading;
-        vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2);
-        vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, vehicle.tiltZ, 0.2);
+
+        const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading);
+        const tilt = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2),
+            0,
+            THREE.MathUtils.lerp(vehicle.mesh.rotation.z, vehicle.tiltZ, 0.2)
+        ));
+        vehicle.mesh.quaternion.copy(yaw).multiply(tilt);
     }
 
     updateProjectiles(delta) {
