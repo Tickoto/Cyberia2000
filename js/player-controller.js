@@ -132,28 +132,74 @@ export class PlayerController {
     }
 
     interact() {
-        if (this.hoverVehicle && this.vehicleManager) {
-            const seatList = this.vehicleManager.listSeats(this.hoverVehicle.vehicle);
-            showInteractionPanel(
-                {
-                    def: { name: `${this.hoverVehicle.vehicle.type} seats`, rarity: 'common' },
-                    readings: null,
-                    locked: false
-                },
-                (action, target) => {
-                    const seatIndex = parseInt(action, 10);
-                    const seatInfo = this.vehicleManager.listSeats(this.hoverVehicle.vehicle).find(s => s.index === seatIndex);
-                    if (!seatInfo || seatInfo.occupied) {
-                        updateInteractionStatus('Seat unavailable.');
-                        return;
-                    }
-                    this.enterVehicle(this.hoverVehicle.vehicle, seatInfo.seat);
-                    hideInteractionPanel();
-                },
-                () => hideInteractionPanel(),
-                seatList
-            );
-            return;
+        if (this.vehicleManager) {
+            if (this.currentVehicle) {
+                const seatList = this.vehicleManager.listSeats(this.currentVehicle).map(seat => ({
+                    ...seat,
+                    role: seat.seat === this.currentSeat ? `${seat.role} (YOU)` : seat.role
+                })).concat([{ index: 'exit', role: 'Exit vehicle', occupied: false }]);
+
+                showInteractionPanel(
+                    {
+                        def: { name: `${this.currentVehicle.type} seats`, rarity: 'common' },
+                        readings: null,
+                        locked: false
+                    },
+                    (action) => {
+                        if (action === 'exit') {
+                            this.vehicleManager.exitSeat(this.currentVehicle, this.currentSeat, this);
+                            hideInteractionPanel();
+                            return;
+                        }
+
+                        const seatIndex = parseInt(action, 10);
+                        const seatInfo = this.vehicleManager.listSeats(this.currentVehicle).find(s => s.index === seatIndex);
+                        if (!seatInfo) {
+                            updateInteractionStatus('Seat unavailable.');
+                            return;
+                        }
+                        if (seatInfo.seat === this.currentSeat) {
+                            updateInteractionStatus('Already in that seat.');
+                            return;
+                        }
+                        if (seatInfo.occupied) {
+                            updateInteractionStatus('Seat occupied.');
+                            return;
+                        }
+
+                        this.vehicleManager.vacateSeat(this.currentVehicle, this.currentSeat);
+                        this.enterVehicle(this.currentVehicle, seatInfo.seat);
+                        hideInteractionPanel();
+                    },
+                    () => hideInteractionPanel(),
+                    seatList
+                );
+                return;
+            }
+
+            if (this.hoverVehicle) {
+                const seatList = this.vehicleManager.listSeats(this.hoverVehicle.vehicle);
+                showInteractionPanel(
+                    {
+                        def: { name: `${this.hoverVehicle.vehicle.type} seats`, rarity: 'common' },
+                        readings: null,
+                        locked: false
+                    },
+                    (action) => {
+                        const seatIndex = parseInt(action, 10);
+                        const seatInfo = this.vehicleManager.listSeats(this.hoverVehicle.vehicle).find(s => s.index === seatIndex);
+                        if (!seatInfo || seatInfo.occupied) {
+                            updateInteractionStatus('Seat unavailable.');
+                            return;
+                        }
+                        this.enterVehicle(this.hoverVehicle.vehicle, seatInfo.seat);
+                        hideInteractionPanel();
+                    },
+                    () => hideInteractionPanel(),
+                    seatList
+                );
+                return;
+            }
         }
 
         const raycaster = new THREE.Raycaster();
@@ -266,13 +312,24 @@ export class PlayerController {
             if (this.keys['KeyA']) vehicle.heading += turnRate * delta;
             if (this.keys['KeyD']) vehicle.heading -= turnRate * delta;
 
-            vehicle.body.velocity.x *= 0.99;
-            vehicle.body.velocity.z *= 0.99;
+            vehicle.body.velocity.x *= 0.992;
+            vehicle.body.velocity.z *= 0.992;
+
+            const maxSpeed = vehicle.type === 'tank' ? 22 : 28;
+            const planarSpeed = Math.hypot(vehicle.body.velocity.x, vehicle.body.velocity.z);
+            if (planarSpeed > maxSpeed) {
+                const scale = maxSpeed / planarSpeed;
+                vehicle.body.velocity.x *= scale;
+                vehicle.body.velocity.z *= scale;
+            }
+            if (vehicle.body.grounded && Math.abs(vehicle.body.velocity.y) < 0.2) {
+                vehicle.body.velocity.y = 0;
+            }
         } else if (vehicle.type === 'helicopter') {
             const thrust = 22;
             if (this.keys['Space']) vehicle.targetAltitude += 8 * delta;
             if (this.keys['ShiftLeft']) vehicle.targetAltitude -= 8 * delta;
-            vehicle.targetAltitude = Math.max(vehicle.targetAltitude, getTerrainHeight(vehicle.body.position.x, vehicle.body.position.z) + 5);
+            vehicle.targetAltitude = Math.max(vehicle.targetAltitude, getTerrainHeight(vehicle.body.position.x, vehicle.body.position.z) + 1.6);
 
             const forward = this.keys['KeyW'] ? thrust : this.keys['KeyS'] ? -thrust * 0.6 : 0;
             const side = this.keys['KeyA'] ? thrust * 0.35 : this.keys['KeyD'] ? -thrust * 0.35 : 0;

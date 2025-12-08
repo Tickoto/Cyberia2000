@@ -100,7 +100,8 @@ export class VehicleManager {
         group.add(tailRotor);
 
         group.position.copy(position);
-        group.position.y = Math.max(position.y + 6, getTerrainHeight(position.x, position.z) + 6);
+        const groundHeight = getTerrainHeight(position.x, position.z);
+        group.position.y = groundHeight + 1.6;
 
         const bodyPhysics = this.physics.registerBody({
             position: group.position,
@@ -248,10 +249,16 @@ export class VehicleManager {
         }));
     }
 
+    vacateSeat(vehicle, seat) {
+        if (!vehicle || !seat) return;
+        seat.occupant = null;
+    }
+
     exitSeat(vehicle, seat, playerController) {
         seat.occupant = null;
         playerController.currentVehicle = null;
         playerController.seatRole = null;
+        playerController.currentSeat = null;
         playerController.char.group.visible = true;
         playerController.char.group.position.copy(vehicle.mesh.position).add(new THREE.Vector3(0, 0, -3).applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading));
         playerController.physicsBody.velocity.set(0, 0, 0);
@@ -280,7 +287,15 @@ export class VehicleManager {
         const body = vehicle.body;
         const terrainY = getTerrainHeight(body.position.x, body.position.z);
         const desiredY = terrainY + (vehicle.type === 'tank' ? 1.25 : 1.1);
-        body.position.y = THREE.MathUtils.lerp(body.position.y, desiredY, 0.4);
+        const heightBlend = vehicle.body.grounded ? 0.65 : 0.35;
+        body.position.y = THREE.MathUtils.lerp(body.position.y, desiredY, heightBlend);
+        if (Math.abs(body.position.y - desiredY) < 0.05) {
+            body.position.y = desiredY;
+            body.velocity.y = 0;
+        }
+
+        body.velocity.x *= 0.995;
+        body.velocity.z *= 0.995;
 
         vehicle.mesh.position.copy(body.position);
         vehicle.mesh.rotation.y = vehicle.heading;
@@ -289,12 +304,23 @@ export class VehicleManager {
     updateHelicopter(vehicle, delta) {
         const body = vehicle.body;
         vehicle.rotor.rotation.y += delta * 15;
-        vehicle.targetAltitude = Math.max(vehicle.targetAltitude, getTerrainHeight(body.position.x, body.position.z) + 5.5);
+        const ground = getTerrainHeight(body.position.x, body.position.z);
+        const minAltitude = ground + 1.6;
+        vehicle.targetAltitude = Math.max(vehicle.targetAltitude, minAltitude);
 
-        const climb = (vehicle.targetAltitude - body.position.y) * 0.6;
-        body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, climb + vehicle.lift, 0.3);
+        const climb = (vehicle.targetAltitude - body.position.y) * 0.8;
+        const targetVertical = climb + vehicle.lift;
+        body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, 0.5);
+
+        body.velocity.x *= 0.985;
+        body.velocity.z *= 0.985;
 
         body.position.addScaledVector(body.velocity, delta);
+        if (body.position.y < minAltitude && vehicle.lift <= 0) {
+            body.position.y = minAltitude;
+            body.velocity.y = 0;
+        }
+
         vehicle.mesh.position.copy(body.position);
         vehicle.mesh.rotation.y = vehicle.heading;
         vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2);
