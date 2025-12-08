@@ -23,16 +23,20 @@ export class PhysicsSystem {
             mass: 1,
             position: new THREE.Vector3(),
             velocity: new THREE.Vector3(),
+            angularVelocity: new THREE.Vector3(), // For rotation (tumbling)
+            rotation: new THREE.Euler(0, 0, 0, 'YXZ'),
             radius: 0.5,
             height: 1.6,
             grounded: false,
             bounciness: 0.05,
             friction: CONFIG.groundFriction,
             damping: CONFIG.airDrag,
+            angularDamping: 0.95, // How quickly rotation slows down
             slopeLimit: CONFIG.slopeLimit,
             groundNormal: new THREE.Vector3(0, 1, 0),
             noCollisions: false,
-            noGravity: false
+            noGravity: false,
+            enableAngularPhysics: false // Enable for vehicles
         };
         const merged = Object.assign(defaults, body);
         this.bodies.add(merged);
@@ -251,6 +255,23 @@ export class PhysicsSystem {
         // Apply velocity to position
         body.position.addScaledVector(body.velocity, delta);
 
+        // Apply angular physics for rigid bodies (vehicles)
+        if (body.enableAngularPhysics && body.angularVelocity) {
+            // Apply angular damping
+            body.angularVelocity.multiplyScalar(body.angularDamping);
+
+            // Apply angular velocity to rotation
+            body.rotation.x += body.angularVelocity.x * delta;
+            body.rotation.y += body.angularVelocity.y * delta;
+            body.rotation.z += body.angularVelocity.z * delta;
+
+            // Clamp extreme rotations for stability
+            const maxAngular = 10; // rad/s max angular velocity
+            body.angularVelocity.x = THREE.MathUtils.clamp(body.angularVelocity.x, -maxAngular, maxAngular);
+            body.angularVelocity.y = THREE.MathUtils.clamp(body.angularVelocity.y, -maxAngular, maxAngular);
+            body.angularVelocity.z = THREE.MathUtils.clamp(body.angularVelocity.z, -maxAngular, maxAngular);
+        }
+
         if (body.noCollisions) {
             this.applyVolumes(body, delta);
             return;
@@ -312,6 +333,30 @@ export class PhysicsSystem {
     projectOntoPlane(vector, normal) {
         const dot = vector.dot(normal);
         return vector.clone().sub(normal.clone().multiplyScalar(dot));
+    }
+
+    // Apply torque (rotational force) to a body
+    applyTorque(body, torque) {
+        if (!body.enableAngularPhysics || !body.angularVelocity) return;
+        // Simplified: torque directly affects angular velocity (ignore inertia tensor)
+        const inertiaFactor = 1.0 / Math.max(body.mass * 0.1, 1);
+        body.angularVelocity.add(torque.clone().multiplyScalar(inertiaFactor));
+    }
+
+    // Apply impulse at a point (creates both linear and angular velocity)
+    applyImpulseAtPoint(body, impulse, point) {
+        if (!body || body.mass <= 0) return;
+
+        // Linear velocity change
+        const linearChange = impulse.clone().divideScalar(body.mass);
+        body.velocity.add(linearChange);
+
+        // Angular velocity change (torque = r × F)
+        if (body.enableAngularPhysics && body.angularVelocity) {
+            const r = point.clone().sub(body.position);
+            const torque = new THREE.Vector3().crossVectors(r, impulse);
+            this.applyTorque(body, torque);
+        }
     }
 
     sampleGround(position, terrainSampler) {
