@@ -36,6 +36,7 @@ export class PlayerController {
         this.currentVehicle = null;
         this.seatRole = null;
         this.lastKeyStates = {};
+        this.hoverVehicle = null;
     }
 
     update(delta) {
@@ -96,6 +97,7 @@ export class PlayerController {
             this.scanInteractions();
         } else {
             this.hoverTarget = null;
+            this.hoverVehicle = null;
             hideInteractionPrompt();
         }
     }
@@ -113,6 +115,13 @@ export class PlayerController {
     }
 
     scanInteractions() {
+        this.hoverVehicle = this.vehicleManager?.findVehicleTarget(this.camera, 9) || null;
+        if (this.hoverVehicle) {
+            showInteractionPrompt(`E - ${this.hoverVehicle.vehicle.type} (${this.hoverVehicle.available.length} seats open)`);
+            this.hoverTarget = null;
+            return;
+        }
+
         const data = this.interactionManager.findClosest(this.char, this.camera);
         this.hoverTarget = data;
         if (data) {
@@ -123,6 +132,30 @@ export class PlayerController {
     }
 
     interact() {
+        if (this.hoverVehicle && this.vehicleManager) {
+            const seatList = this.vehicleManager.listSeats(this.hoverVehicle.vehicle);
+            showInteractionPanel(
+                {
+                    def: { name: `${this.hoverVehicle.vehicle.type} seats`, rarity: 'common' },
+                    readings: null,
+                    locked: false
+                },
+                (action, target) => {
+                    const seatIndex = parseInt(action, 10);
+                    const seatInfo = this.vehicleManager.listSeats(this.hoverVehicle.vehicle).find(s => s.index === seatIndex);
+                    if (!seatInfo || seatInfo.occupied) {
+                        updateInteractionStatus('Seat unavailable.');
+                        return;
+                    }
+                    this.enterVehicle(this.hoverVehicle.vehicle, seatInfo.seat);
+                    hideInteractionPanel();
+                },
+                () => hideInteractionPanel(),
+                seatList
+            );
+            return;
+        }
+
         const raycaster = new THREE.Raycaster();
         raycaster.setFromCamera(new THREE.Vector2(0, 0), this.camera);
         const intersects = raycaster.intersectObjects(this.scene.children, true);
@@ -212,6 +245,8 @@ export class PlayerController {
         this.seatRole = seat.role;
         this.char.group.visible = false;
         this.physicsBody.velocity.set(0, 0, 0);
+        this.physicsBody.noCollisions = true;
+        this.physicsBody.noGravity = true;
     }
 
     updateVehicleControl(delta) {

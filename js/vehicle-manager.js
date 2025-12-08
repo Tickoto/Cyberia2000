@@ -7,6 +7,7 @@ export class VehicleManager {
         this.vehicles = [];
         this.projectiles = [];
         this.bombs = [];
+        this.raycaster = new THREE.Raycaster();
     }
 
     spawnStartingVehicles(origin) {
@@ -61,6 +62,7 @@ export class VehicleManager {
             type: 'tank',
             mesh: group,
             body,
+            vehicleColliders: [],
             heading: 0,
             turretYaw: 0,
             cannonPitch: 0,
@@ -75,6 +77,7 @@ export class VehicleManager {
         };
 
         this.scene.add(group);
+        this.registerVehicleColliders(vehicle);
         this.vehicles.push(vehicle);
         return vehicle;
     }
@@ -114,6 +117,7 @@ export class VehicleManager {
             type: 'helicopter',
             mesh: group,
             body: bodyPhysics,
+            vehicleColliders: [],
             heading: 0,
             tiltX: 0,
             tiltZ: 0,
@@ -129,6 +133,7 @@ export class VehicleManager {
         };
 
         this.scene.add(group);
+        this.registerVehicleColliders(vehicle);
         this.vehicles.push(vehicle);
         return vehicle;
     }
@@ -165,6 +170,7 @@ export class VehicleManager {
             type: 'jeep',
             mesh: group,
             body,
+            vehicleColliders: [],
             heading: 0,
             seats: [
                 { role: 'driver', occupant: null, offset: new THREE.Vector3(-1.4, 1.6, -1.6) },
@@ -178,8 +184,22 @@ export class VehicleManager {
         };
 
         this.scene.add(group);
+        this.registerVehicleColliders(vehicle);
         this.vehicles.push(vehicle);
         return vehicle;
+    }
+
+    registerVehicleColliders(vehicle) {
+        vehicle.mesh.traverse(obj => {
+            obj.userData = obj.userData || {};
+            obj.userData.vehicle = vehicle;
+            obj.userData.type = 'vehicle';
+        });
+        vehicle.vehicleColliders = this.physics.registerHierarchy(vehicle.mesh);
+        if (vehicle.body) {
+            vehicle.body.isVehicle = true;
+            vehicle.body.vehicleRef = vehicle;
+        }
     }
 
     findAvailableSeat(position, radius = 5) {
@@ -199,6 +219,35 @@ export class VehicleManager {
         return best;
     }
 
+    findVehicleTarget(camera, maxDistance = 8) {
+        if (!this.vehicles.length) return null;
+        this.raycaster.setFromCamera(new THREE.Vector2(0, 0), camera);
+        this.raycaster.far = maxDistance;
+        const hits = this.raycaster.intersectObjects(this.vehicles.map(v => v.mesh), true);
+        if (!hits.length) return null;
+
+        for (const hit of hits) {
+            let obj = hit.object;
+            while (obj && !obj.userData?.vehicle && obj.parent) obj = obj.parent;
+            if (obj?.userData?.vehicle) {
+                const vehicle = obj.userData.vehicle;
+                const available = vehicle.seats.filter(s => !s.occupant);
+                if (available.length === 0) return null;
+                return { vehicle, available };
+            }
+        }
+        return null;
+    }
+
+    listSeats(vehicle) {
+        return vehicle.seats.map((seat, index) => ({
+            index,
+            role: seat.role,
+            occupied: !!seat.occupant,
+            seat
+        }));
+    }
+
     exitSeat(vehicle, seat, playerController) {
         seat.occupant = null;
         playerController.currentVehicle = null;
@@ -206,6 +255,8 @@ export class VehicleManager {
         playerController.char.group.visible = true;
         playerController.char.group.position.copy(vehicle.mesh.position).add(new THREE.Vector3(0, 0, -3).applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading));
         playerController.physicsBody.velocity.set(0, 0, 0);
+        playerController.physicsBody.noCollisions = false;
+        playerController.physicsBody.noGravity = false;
     }
 
     update(delta) {
