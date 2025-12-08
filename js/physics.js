@@ -201,17 +201,33 @@ export class PhysicsSystem {
     }
 
     // Raycast-based ground detection
-    groundCast(position, capsuleHeight) {
+    // UPDATED: Now accepts 'body' to filter out self-collisions
+    groundCast(body) {
         if (!this.colliders.length) return null;
 
-        const origin = position.clone();
-        origin.y += capsuleHeight * 0.5;
+        const origin = body.position.clone();
+        // Start from center up to avoid starting inside the ground, 
+        // but high enough to clear local geometry if needed
+        origin.y += body.height * 0.5;
 
         this.raycaster.set(origin, new THREE.Vector3(0, -1, 0));
+        
+        // Raycast against all colliders
         const hits = this.raycaster.intersectObjects(this.colliders, false);
 
         if (!hits.length) return null;
-        return hits[0];
+
+        // CRITICAL FIX: Filter out the body's own vehicle parts
+        // This prevents the helicopter from hitting its own skids/body and launching into space
+        const validHit = hits.find(hit => {
+            // If the hit object belongs to the same vehicle as the body, ignore it
+            if (hit.object.userData && hit.object.userData.vehicle && body.vehicleRef && hit.object.userData.vehicle === body.vehicleRef) {
+                return false;
+            }
+            return true;
+        });
+
+        return validHit || null;
     }
 
     step(delta, terrainSampler) {
@@ -244,7 +260,8 @@ export class PhysicsSystem {
         const collisionInfo = this.resolveCollisions(body.position, body.velocity, body.radius, body.height, body);
 
         // Ground detection using raycast and terrain
-        const groundInfo = this.groundCast(body.position, body.height);
+        // Pass 'body' to groundCast so it can filter self-intersections
+        const groundInfo = this.groundCast(body);
         const terrainGround = this.sampleGround(body.position, terrainSampler);
 
         const groundHeight = groundInfo
@@ -259,7 +276,9 @@ export class PhysicsSystem {
 
         body.grounded = collisionInfo.onGround;
 
+        // Ground Collision / Stabilization
         if (penetration > 0) {
+            // Hard floor collision
             body.position.y += penetration;
             const vertical = body.velocity.y;
             body.velocity.y = vertical < 0 ? 0 : Math.min(vertical, 1.5);
@@ -270,14 +289,18 @@ export class PhysicsSystem {
             body.velocity.z = slide.z * Math.max(0, 1 - body.friction * delta);
             body.grounded = true;
 
-            if (vertical < -1 && body.bounciness > 0) {
-                body.velocity.addScaledVector(groundNormal, -vertical * body.bounciness * 0.25);
+            // Bounce logic
+            if (vertical < -2 && body.bounciness > 0) {
+                 // Add a bit of upward force based on impact
+                body.velocity.y = -vertical * body.bounciness;
             }
         } else if (penetration > -this.stepHeight && movingDownward) {
+            // Step up / stick to slope
             body.position.y += Math.max(penetration, 0);
             body.velocity.y = Math.max(body.velocity.y, -1.5);
             body.grounded = true;
         } else if (Math.abs(penetration) < 0.25 && movingDownward) {
+            // Smooth slope descending
             body.position.y = THREE.MathUtils.lerp(body.position.y, desiredHeight, 0.35);
             body.velocity.y = Math.max(body.velocity.y, -2.5);
             body.grounded = true;
