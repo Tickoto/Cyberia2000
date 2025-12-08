@@ -299,8 +299,8 @@ export class PlayerController {
         if (!this.currentVehicle) return;
         const vehicle = this.currentVehicle;
         if (vehicle.type === 'tank' || vehicle.type === 'jeep') {
-            const accel = vehicle.type === 'tank' ? 26 : 32;
-            const turnRate = vehicle.type === 'tank' ? 0.9 : 1.3;
+            const accel = vehicle.type === 'tank' ? 34 : 42;
+            const turnRate = vehicle.type === 'tank' ? 0.95 : 1.45;
             if (this.keys['KeyW']) {
                 vehicle.body.velocity.x += Math.sin(vehicle.heading) * accel * delta;
                 vehicle.body.velocity.z += Math.cos(vehicle.heading) * accel * delta;
@@ -315,7 +315,7 @@ export class PlayerController {
             vehicle.body.velocity.x *= 0.992;
             vehicle.body.velocity.z *= 0.992;
 
-            const maxSpeed = vehicle.type === 'tank' ? 22 : 28;
+            const maxSpeed = vehicle.type === 'tank' ? 28 : 36;
             const planarSpeed = Math.hypot(vehicle.body.velocity.x, vehicle.body.velocity.z);
             if (planarSpeed > maxSpeed) {
                 const scale = maxSpeed / planarSpeed;
