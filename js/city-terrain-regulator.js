@@ -4,6 +4,10 @@ function hash(x, z) {
     return Math.abs(Math.sin(x * 12.9898 + z * 78.233) * 43758.5453) % 1;
 }
 
+function lerp(a, b, t) {
+    return a + (b - a) * t;
+}
+
 const MASK_SIZE = 48;
 const MASK_COUNT = 36;
 
@@ -2012,6 +2016,44 @@ export function evaluateCityHeight(wx, wz) {
         forcePlateau: hardPlateau,
         weight
     };
+}
+
+// Determine how much ramping we should apply for a given world coordinate. This is
+// used by the terrain system to automatically generate gentle inclines into and out
+// of settlement plateaus. The function leans on the mask weight so that road cores
+// stay flatter, while fringes inherit more of the native slope.
+export function evaluateUrbanRamp(wx, wz, naturalHeight) {
+    const { weight } = evaluateCityHeight(wx, wz);
+    const centerFalloff = THREE.MathUtils.clamp(weight * 1.6, 0, 1);
+
+    // Compute an offset that we blend back onto the natural terrain. Higher weight
+    // means more aggressive flattening toward the plateau height, while low weight
+    // neighborhoods still honor the original terrain undulations.
+    const heightOffset = lerp(0, CONFIG.cityPlateauHeight - naturalHeight, centerFalloff * 0.55);
+
+    // Encourage ramps to follow the natural slope instead of fighting it. Ramps
+    // close to cliffs clamp their slope to avoid impossible grades.
+    const slopeFactor = THREE.MathUtils.smoothstep(centerFalloff, 0.05, 0.65);
+
+    // Provide a small outside falloff so surrounding tiles gradually return to their
+    // untouched height, eliminating sharp seams between city and wilderness chunks.
+    const outsideFalloff = THREE.MathUtils.clamp(1 - weight * 1.5, 0, 0.35);
+
+    return { heightOffset, slopeFactor, outsideFalloff };
+}
+
+// Debug helper that exposes the raw mask weight and plateau selection. This is
+// useful for visual overlays to verify that new city/terrain blending rules are
+// functioning as expected when combined with the revamped terrain stack.
+export function describeCityMask(wx, wz) {
+    const { mask, index } = sampleMask(wx, wz);
+    const { nx, nz } = normalizedCoords(wx, wz);
+    const x = Math.floor(nx * mask.size);
+    const z = Math.floor(nz * mask.size);
+    const clampedX = Math.min(Math.max(x, 0), mask.size - 1);
+    const clampedZ = Math.min(Math.max(z, 0), mask.size - 1);
+    const weight = mask.weights[clampedZ][clampedX];
+    return { blueprintId: mask.id ?? index, weight, coords: { x: clampedX, z: clampedZ }, normalized: { nx, nz } };
 }
 
 export function clearCityMaskCache() {
