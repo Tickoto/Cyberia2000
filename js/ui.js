@@ -141,7 +141,7 @@ function setupCreatorControls(previewChar) {
     });
 }
 
-export function showInteractionPanel(target, onAction, onClose) {
+export function showInteractionPanel(target, onAction, onClose, seatList = null) {
     const panel = document.getElementById('interaction-panel');
     const title = document.getElementById('interaction-title');
     const desc = document.getElementById('interaction-desc');
@@ -151,19 +151,31 @@ export function showInteractionPanel(target, onAction, onClose) {
     interactionCallbacks = { onAction, onClose, target };
 
     title.textContent = `${target.def.name} (${target.def.rarity})`;
-    const infoLines = [
-        target.locked ? `Cooldown: ${target.remaining}s` : 'Online',
-        `Energy: ${target.def.energy}mw`,
-        `Category: ${target.def.category}`
-    ];
-    if (target.readings) {
-        infoLines.push(`Integrity ${target.readings.integrity}% | Risk ${target.readings.risk}`);
+    const infoLines = [];
+    if (!seatList) {
+        infoLines.push(target.locked ? `Cooldown: ${target.remaining}s` : 'Online');
+        if (target.def.energy) infoLines.push(`Energy: ${target.def.energy}mw`);
+        if (target.def.category) infoLines.push(`Category: ${target.def.category}`);
+        if (target.readings) {
+            infoLines.push(`Integrity ${target.readings.integrity}% | Risk ${target.readings.risk}`);
+        }
+    } else {
+        infoLines.push('Select a seat to enter');
     }
     desc.textContent = infoLines.join(' • ');
     status.textContent = target.locked ? 'Awaiting reset...' : 'Ready.';
 
     actions.innerHTML = '';
-    if (target.def.actions) {
+    if (seatList) {
+        seatList.forEach(seat => {
+            const btn = document.createElement('button');
+            btn.className = 'action-btn';
+            btn.textContent = `${seat.role.toUpperCase()}${seat.occupied ? ' (OCCUPIED)' : ''}`;
+            btn.disabled = seat.occupied;
+            btn.addEventListener('click', () => handleAction(String(seat.index)));
+            actions.appendChild(btn);
+        });
+    } else if (target.def.actions) {
         target.def.actions.forEach(action => {
             const btn = document.createElement('button');
             btn.className = 'action-btn';
