@@ -64,6 +64,9 @@ export class VehicleManager {
             body,
             vehicleColliders: [],
             heading: 0,
+            tilt: new THREE.Euler(0, 0, 0, 'YXZ'),
+            angularVelocity: new THREE.Vector3(),
+            wasGrounded: true,
             turretYaw: 0,
             cannonPitch: 0,
             seats: [
@@ -120,6 +123,9 @@ export class VehicleManager {
             body: bodyPhysics,
             vehicleColliders: [],
             heading: 0,
+            tilt: new THREE.Euler(0, 0, 0, 'YXZ'),
+            angularVelocity: new THREE.Vector3(),
+            wasGrounded: true,
             tiltX: 0,
             tiltZ: 0,
             rotor,
@@ -173,6 +179,9 @@ export class VehicleManager {
             body,
             vehicleColliders: [],
             heading: 0,
+            tilt: new THREE.Euler(0, 0, 0, 'YXZ'),
+            angularVelocity: new THREE.Vector3(),
+            wasGrounded: true,
             seats: [
                 { role: 'driver', occupant: null, offset: new THREE.Vector3(-1.4, 1.6, -1.6) },
                 { role: 'passenger', occupant: null, offset: new THREE.Vector3(1.4, 1.6, -1.6) },
@@ -285,24 +294,34 @@ export class VehicleManager {
 
     updateGroundVehicle(vehicle, delta) {
         const body = vehicle.body;
-        const damping = body.grounded ? 0.992 : 0.998;
-        body.velocity.x *= damping;
-        body.velocity.z *= damping;
+        const wasGrounded = vehicle.wasGrounded;
+        vehicle.wasGrounded = body.grounded;
 
-        const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading);
-        const up = new THREE.Vector3(0, 1, 0);
-        const align = body.grounded
-            ? new THREE.Quaternion().setFromUnitVectors(up, body.groundNormal.clone().normalize())
-            : new THREE.Quaternion();
+        const surfaceFriction = body.grounded ? 0.99 : 0.995;
+        body.velocity.x *= surfaceFriction;
+        body.velocity.z *= surfaceFriction;
 
-        const airborneLean = body.grounded ? new THREE.Quaternion() : new THREE.Quaternion().setFromEuler(new THREE.Euler(
-            THREE.MathUtils.clamp(body.velocity.z * -0.01, -0.35, 0.35),
-            0,
-            THREE.MathUtils.clamp(body.velocity.x * 0.01, -0.35, 0.35)
-        ));
+        if (!body.grounded && Math.abs(body.velocity.y) > 4) {
+            vehicle.angularVelocity.x += -Math.sin(vehicle.heading) * body.velocity.length() * 0.0008;
+            vehicle.angularVelocity.z += Math.cos(vehicle.heading) * body.velocity.length() * 0.0008;
+        }
+
+        if (body.grounded) {
+            vehicle.angularVelocity.multiplyScalar(0.75);
+            if (!wasGrounded && Math.abs(body.velocity.y) > 5) {
+                vehicle.angularVelocity.x += THREE.MathUtils.clamp(-body.velocity.y * 0.025, -1.5, 1.5);
+            }
+            vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, 0, 0.2);
+            vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, 0, 0.2);
+        } else {
+            vehicle.angularVelocity.multiplyScalar(0.98);
+        }
+
+        vehicle.tilt.x = THREE.MathUtils.clamp(vehicle.tilt.x + vehicle.angularVelocity.x * delta, -Math.PI, Math.PI);
+        vehicle.tilt.z = THREE.MathUtils.clamp(vehicle.tilt.z + vehicle.angularVelocity.z * delta, -Math.PI, Math.PI);
 
         vehicle.mesh.position.copy(body.position);
-        vehicle.mesh.quaternion.copy(yaw).multiply(align).multiply(airborneLean);
+        vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
     }
 
     updateHelicopter(vehicle, delta) {
@@ -319,12 +338,17 @@ export class VehicleManager {
 
         vehicle.targetAltitude = Math.max(vehicle.targetAltitude, minAltitude);
 
-        const climb = (vehicle.targetAltitude - body.position.y) * 1.1;
+        const climb = (vehicle.targetAltitude - body.position.y) * 0.65;
         const targetVertical = climb + vehicle.lift;
-        body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, 0.6);
+        body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, Math.min(1, delta * 6));
 
         body.velocity.x *= 0.985;
         body.velocity.z *= 0.985;
+
+        if (body.grounded && vehicle.lift <= 0 && vehicle.targetAltitude <= minAltitude + 0.25) {
+            body.velocity.y = Math.min(body.velocity.y, 0);
+            vehicle.targetAltitude = minAltitude;
+        }
 
         vehicle.mesh.position.copy(body.position);
 
