@@ -374,9 +374,14 @@ export class VehicleManager {
         }
 
         vehicle.mesh.position.copy(body.position);
-        vehicle.mesh.rotation.y = vehicle.heading;
-        vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2);
-        vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, vehicle.tiltZ, 0.2);
+
+        const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading);
+        const tilt = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2),
+            0,
+            THREE.MathUtils.lerp(vehicle.mesh.rotation.z, vehicle.tiltZ, 0.2)
+        ));
+        vehicle.mesh.quaternion.copy(yaw).multiply(tilt);
     }
 
     updateProjectiles(delta) {
