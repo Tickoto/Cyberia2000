@@ -30,7 +30,9 @@ export class PhysicsSystem {
             friction: CONFIG.groundFriction,
             damping: CONFIG.airDrag,
             slopeLimit: CONFIG.slopeLimit,
-            groundNormal: new THREE.Vector3(0, 1, 0)
+            groundNormal: new THREE.Vector3(0, 1, 0),
+            noCollisions: false,
+            noGravity: false
         };
         const merged = Object.assign(defaults, body);
         this.bodies.add(merged);
@@ -144,6 +146,7 @@ export class PhysicsSystem {
         const box = this.boundingBoxes.get(mesh) || new THREE.Box3();
         mesh.updateWorldMatrix(true, false);
         box.setFromObject(mesh);
+        box.owner = mesh;
         this.boundingBoxes.set(mesh, box);
         return box;
     }
@@ -217,7 +220,9 @@ export class PhysicsSystem {
 
     integrate(body, delta, terrainSampler) {
         const { gravity, horizontal, tempNormal } = this._scratch;
-        body.velocity.addScaledVector(gravity, delta);
+        if (!body.noGravity) {
+            body.velocity.addScaledVector(gravity, delta);
+        }
 
         body.velocity.x *= 1 - body.damping * delta;
         body.velocity.z *= 1 - body.damping * delta;
@@ -230,9 +235,13 @@ export class PhysicsSystem {
         // Apply velocity to position
         body.position.addScaledVector(body.velocity, delta);
 
+        if (body.noCollisions) {
+            this.applyVolumes(body, delta);
+            return;
+        }
+
         // Resolve collisions with nearby colliders
-        const colliders = this.getNearbyColliders(body.position);
-        const collisionInfo = this.resolveCollisions(body.position, body.velocity, body.radius, body.height);
+        const collisionInfo = this.resolveCollisions(body.position, body.velocity, body.radius, body.height, body);
 
         // Ground detection using raycast and terrain
         const groundInfo = this.groundCast(body.position, body.height);
@@ -299,7 +308,7 @@ export class PhysicsSystem {
         });
     }
 
-    resolveCollisions(position, velocity, radius, height) {
+    resolveCollisions(position, velocity, radius, height, body = null) {
         const colliders = this.getNearbyColliders(position);
         if (!colliders.length) return { onGround: false };
 
@@ -313,6 +322,7 @@ export class PhysicsSystem {
         const colliderCenter = new THREE.Vector3();
 
         for (const box of colliders) {
+            if (body?.isVehicle && box.owner?.userData?.vehicle === body?.vehicleRef) continue;
             if (!capsule.intersectsBox(box)) continue;
 
             const overlapX = Math.min(capsule.max.x, box.max.x) - Math.max(capsule.min.x, box.min.x);
