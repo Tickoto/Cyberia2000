@@ -17,6 +17,7 @@ const rooms = new Map(); // roomId -> Set of clients
 const clientRooms = new Map(); // client -> roomId
 const clientInfo = new Map(); // client -> { clientId, username }
 const playerEntities = new Map(); // clientId -> last entity spawn/update data
+const vehicleEntities = new Map(); // roomId -> Map(entityId -> entity data)
 
 // Create WebSocket server
 const wss = new WebSocket.Server({ port: PORT });
@@ -67,6 +68,16 @@ function handleMessage(client, message) {
             if (data?.type === 'player' && clientId) {
                 playerEntities.set(clientId, { ...data, clientId, timestamp });
             }
+            // Store vehicle entities for syncing to new players
+            if (data?.type === 'vehicle' && data?.id) {
+                const roomId = clientRooms.get(client);
+                if (roomId) {
+                    if (!vehicleEntities.has(roomId)) {
+                        vehicleEntities.set(roomId, new Map());
+                    }
+                    vehicleEntities.get(roomId).set(data.id, { ...data, ownerId: clientId, timestamp });
+                }
+            }
             // Broadcast to room
             if (data?.broadcast) {
                 broadcastToRoom(client, message);
@@ -82,13 +93,31 @@ function handleMessage(client, message) {
                     playerEntities.set(clientId, { ...existing, ...data, timestamp });
                 }
             }
+            // Update stored vehicle entity data
+            if (data?.type === 'vehicle' && data?.id) {
+                const roomId = clientRooms.get(client);
+                if (roomId && vehicleEntities.has(roomId)) {
+                    const existing = vehicleEntities.get(roomId).get(data.id);
+                    if (existing) {
+                        vehicleEntities.get(roomId).set(data.id, { ...existing, ...data, timestamp });
+                    }
+                }
+            }
             // Handle world_state with multiple entities
             if (type === 'world_state' && data?.entities) {
+                const roomId = clientRooms.get(client);
                 for (const entity of data.entities) {
                     if (entity.type === 'player' && entity.ownerId) {
                         const existing = playerEntities.get(entity.ownerId);
                         if (existing) {
                             playerEntities.set(entity.ownerId, { ...existing, ...entity, timestamp });
+                        }
+                    }
+                    // Also update vehicle entities in world_state
+                    if (entity.type === 'vehicle' && entity.id && roomId && vehicleEntities.has(roomId)) {
+                        const existing = vehicleEntities.get(roomId).get(entity.id);
+                        if (existing) {
+                            vehicleEntities.get(roomId).set(entity.id, { ...existing, ...entity, timestamp });
                         }
                     }
                 }
@@ -171,6 +200,20 @@ function handleHandshake(client, data, clientId) {
         }
     }
 
+    // Send existing vehicles to the new client
+    if (vehicleEntities.has(roomId)) {
+        const roomVehicles = vehicleEntities.get(roomId);
+        for (const [entityId, entityData] of roomVehicles) {
+            const spawnMessage = JSON.stringify({
+                type: 'entity_spawn',
+                data: entityData,
+                clientId: entityData.ownerId,
+                timestamp: Date.now()
+            });
+            client.send(spawnMessage);
+        }
+    }
+
     // Notify others in room about the new player
     broadcastToRoom(client, {
         type: 'player_join',
@@ -222,6 +265,8 @@ function handleDisconnect(client) {
         // Clean up empty rooms
         if (rooms.get(roomId).size === 0) {
             rooms.delete(roomId);
+            // Also clean up vehicle entities for this room
+            vehicleEntities.delete(roomId);
             console.log(`Room ${roomId} closed (empty)`);
         }
     }
