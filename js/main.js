@@ -8,9 +8,10 @@ import { playerInventory, inventoryUI } from './inventory.js';
 import { CONFIG } from './config.js';
 import { networkManager, NetworkPlayer, NetworkEntityType, MessageType } from './network-manager.js';
 import { Character } from './character.js';
+import { VehicleManager } from './vehicle-manager.js';
 
 let scene, camera, renderer, clock;
-let playerController, worldManager, warManager, physics, environment;
+let playerController, worldManager, warManager, physics, environment, vehicleManager;
 let isGameActive = false;
 let previewChar;
 const keys = {};
@@ -56,6 +57,9 @@ function init() {
         keys[e.code] = true;
         if (e.code === 'KeyE' && isGameActive) {
             playerController.interact();
+        }
+        if (e.code === 'KeyF' && isGameActive) {
+            playerController.toggleVehicleSeat();
         }
         if (e.code === 'KeyI' && isGameActive) {
             inventoryUI.toggle();
@@ -103,6 +107,11 @@ function init() {
         }
     });
 
+    document.addEventListener('mousedown', e => {
+        if (!isGameActive) return;
+        playerController.handleFire(e.button);
+    });
+
     document.getElementById('game-ui').addEventListener('click', () => {
         if (isGameActive) {
             document.body.requestPointerLock();
@@ -122,11 +131,12 @@ function startGame() {
     environment = new EnvironmentSystem(scene);
     worldManager = new WorldManager(scene, physics);
     warManager = new WarManager(scene);
+    vehicleManager = new VehicleManager(scene, physics);
 
     // Connect inventory to interaction manager
     worldManager.interactionManager.setInventory(playerInventory);
 
-    playerController = new PlayerController({ scene, camera, worldManager, logChat, keys, mouse, physics, interactionManager: worldManager.interactionManager, environment });
+    playerController = new PlayerController({ scene, camera, worldManager, logChat, keys, mouse, physics, interactionManager: worldManager.interactionManager, environment, vehicleManager });
 
     playerController.char.params = { ...previewChar.params };
     playerController.char.rebuild();
@@ -135,6 +145,7 @@ function startGame() {
     const spawn = worldManager.findCitySpawnPoint();
     playerController.char.group.position.set(spawn.x, spawn.y, spawn.z);
     playerController.physicsBody.velocity.set(0, 0, 0);
+    vehicleManager.spawnStartingVehicles(spawn);
 
     isGameActive = true;
     document.body.requestPointerLock();
@@ -355,6 +366,7 @@ function gameLoop() {
         playerController.update(delta);
         worldManager.update(playerController.char.group.position, delta);
         warManager.update(delta, playerController.char.group.position);
+        vehicleManager.update(delta);
         environment.update(delta, playerController.char.group.position);
         updateMinimap(playerController, worldManager, warManager);
 
