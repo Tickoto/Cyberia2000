@@ -299,47 +299,97 @@ export class PlayerController {
         if (!this.currentVehicle) return;
         const vehicle = this.currentVehicle;
         if (vehicle.type === 'tank' || vehicle.type === 'jeep') {
-            const accel = vehicle.type === 'tank' ? 34 : 42;
-            const turnRate = vehicle.type === 'tank' ? 0.95 : 1.45;
+            const accel = vehicle.type === 'tank' ? 38 : 48;
+            const turnRate = vehicle.type === 'tank' ? 1.5 : 2.2;
+            const maxSpeed = vehicle.type === 'tank' ? 32 : 42;
+
+            // Forward/backward acceleration
             if (this.keys['KeyW']) {
                 vehicle.body.velocity.x += Math.sin(vehicle.heading) * accel * delta;
                 vehicle.body.velocity.z += Math.cos(vehicle.heading) * accel * delta;
+
+                // Add forward pitch when accelerating
+                if (vehicle.body.angularVelocity) {
+                    vehicle.body.angularVelocity.x += 0.3 * delta;
+                }
             }
             if (this.keys['KeyS']) {
-                vehicle.body.velocity.x -= Math.sin(vehicle.heading) * accel * delta;
-                vehicle.body.velocity.z -= Math.cos(vehicle.heading) * accel * delta;
+                vehicle.body.velocity.x -= Math.sin(vehicle.heading) * accel * 0.7 * delta;
+                vehicle.body.velocity.z -= Math.cos(vehicle.heading) * accel * 0.7 * delta;
+
+                // Add backward pitch when braking
+                if (vehicle.body.angularVelocity) {
+                    vehicle.body.angularVelocity.x -= 0.2 * delta;
+                }
             }
-            if (this.keys['KeyA']) vehicle.heading += turnRate * delta;
-            if (this.keys['KeyD']) vehicle.heading -= turnRate * delta;
 
-            vehicle.body.velocity.x *= 0.992;
-            vehicle.body.velocity.z *= 0.992;
+            // Turning - apply angular velocity for yaw
+            const speed = Math.hypot(vehicle.body.velocity.x, vehicle.body.velocity.z);
+            const turnMultiplier = Math.min(1, speed / 10); // Need some speed to turn effectively
 
-            const maxSpeed = vehicle.type === 'tank' ? 28 : 36;
-            const planarSpeed = Math.hypot(vehicle.body.velocity.x, vehicle.body.velocity.z);
-            if (planarSpeed > maxSpeed) {
-                const scale = maxSpeed / planarSpeed;
+            if (this.keys['KeyA']) {
+                vehicle.heading += turnRate * turnMultiplier * delta;
+                // Apply roll when turning
+                if (vehicle.body.angularVelocity && speed > 5) {
+                    vehicle.body.angularVelocity.z -= 0.4 * turnMultiplier * delta;
+                }
+            }
+            if (this.keys['KeyD']) {
+                vehicle.heading -= turnRate * turnMultiplier * delta;
+                // Apply roll when turning
+                if (vehicle.body.angularVelocity && speed > 5) {
+                    vehicle.body.angularVelocity.z += 0.4 * turnMultiplier * delta;
+                }
+            }
+
+            // Apply handbrake with Space - spin out!
+            if (this.keys['Space'] && speed > 8) {
+                // Reduce friction and add spin
+                vehicle.body.velocity.x *= 0.98;
+                vehicle.body.velocity.z *= 0.98;
+                if (this.keys['KeyA']) {
+                    vehicle.body.angularVelocity.y += 2.0 * delta;
+                    vehicle.body.angularVelocity.z -= 1.5 * delta;
+                }
+                if (this.keys['KeyD']) {
+                    vehicle.body.angularVelocity.y -= 2.0 * delta;
+                    vehicle.body.angularVelocity.z += 1.5 * delta;
+                }
+            }
+
+            // Speed limit
+            if (speed > maxSpeed) {
+                const scale = maxSpeed / speed;
                 vehicle.body.velocity.x *= scale;
                 vehicle.body.velocity.z *= scale;
             }
-            if (vehicle.body.grounded && Math.abs(vehicle.body.velocity.y) < 0.2) {
-                vehicle.body.velocity.y = 0;
+
+            // Stabilize Y velocity when grounded
+            if (vehicle.body.grounded && Math.abs(vehicle.body.velocity.y) < 0.5) {
+                vehicle.body.velocity.y *= 0.8;
             }
         } else if (vehicle.type === 'helicopter') {
-            const thrust = 22;
-            if (this.keys['Space']) vehicle.targetAltitude += 8 * delta;
-            if (this.keys['ShiftLeft']) vehicle.targetAltitude -= 8 * delta;
+            // Altitude control (collective)
+            if (this.keys['Space']) vehicle.targetAltitude += 12 * delta;
+            if (this.keys['ShiftLeft']) vehicle.targetAltitude -= 12 * delta;
             vehicle.targetAltitude = Math.max(vehicle.targetAltitude, getTerrainHeight(vehicle.body.position.x, vehicle.body.position.z) + 1.6);
 
-            const forward = this.keys['KeyW'] ? thrust : this.keys['KeyS'] ? -thrust * 0.6 : 0;
-            const side = this.keys['KeyA'] ? thrust * 0.35 : this.keys['KeyD'] ? -thrust * 0.35 : 0;
-            const headingChange = side * 0.03;
-            vehicle.heading += headingChange * delta;
-            const dir = new THREE.Vector3(Math.sin(vehicle.heading), 0, Math.cos(vehicle.heading)).multiplyScalar(forward * delta);
-            vehicle.body.velocity.x = THREE.MathUtils.lerp(vehicle.body.velocity.x, dir.x, 0.6);
-            vehicle.body.velocity.z = THREE.MathUtils.lerp(vehicle.body.velocity.z, dir.z, 0.6);
-            vehicle.tiltX = THREE.MathUtils.clamp(-forward * 0.02, -0.25, 0.25);
-            vehicle.tiltZ = THREE.MathUtils.clamp(side * 0.04, -0.35, 0.35);
+            // Calculate control inputs (normalized -1 to 1)
+            const pitchInput = this.keys['KeyW'] ? 1.0 : this.keys['KeyS'] ? -0.6 : 0;
+            const rollInput = this.keys['KeyA'] ? -1.0 : this.keys['KeyD'] ? 1.0 : 0;
+
+            // Yaw control (A/D also turns the helicopter)
+            const yawRate = 1.8;
+            if (this.keys['KeyA']) vehicle.heading += yawRate * delta;
+            if (this.keys['KeyD']) vehicle.heading -= yawRate * delta;
+
+            // Set tilt values - vehicle-manager will handle physics
+            // Positive tiltX = pitch forward (nose down), negative = pitch back
+            vehicle.tiltX = THREE.MathUtils.lerp(vehicle.tiltX, pitchInput * 0.5, delta * 4);
+            vehicle.tiltZ = THREE.MathUtils.lerp(vehicle.tiltZ, rollInput * 0.4, delta * 4);
+
+            // Set lift for altitude control
+            vehicle.lift = this.keys['Space'] ? 1 : this.keys['ShiftLeft'] ? -1 : 0;
         }
 
         this.char.group.position.copy(this.currentSeat.offset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading).add(vehicle.mesh.position));

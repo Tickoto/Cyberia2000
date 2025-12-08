@@ -8,7 +8,8 @@ export const NetworkEntityType = {
     NPC: 'npc',
     UNIT: 'unit',
     OBJECT: 'object',
-    PROJECTILE: 'projectile'
+    PROJECTILE: 'projectile',
+    VEHICLE: 'vehicle'
 };
 
 // ============================================
@@ -234,6 +235,65 @@ export class NetworkObject extends NetworkEntity {
         if (data.objectId) this.syncProperties.objectId = data.objectId;
         if (data.state) this.syncProperties.state = data.state;
         if (data.cooldown !== undefined) this.syncProperties.cooldown = data.cooldown;
+    }
+}
+
+// ============================================
+// NETWORK VEHICLE - Vehicle entity for networking
+// ============================================
+export class NetworkVehicle extends NetworkEntity {
+    constructor(id = null) {
+        super(NetworkEntityType.VEHICLE, id);
+        this.syncProperties = {
+            x: 0, y: 0, z: 0,
+            rotationX: 0, rotationY: 0, rotationZ: 0,
+            velocityX: 0, velocityY: 0, velocityZ: 0,
+            vehicleType: 'tank',
+            heading: 0,
+            tiltX: 0,
+            tiltZ: 0,
+            targetAltitude: 0,
+            occupants: [] // Array of seat indices with occupant client IDs
+        };
+    }
+
+    getSyncData() {
+        return {
+            ...super.getSyncData(),
+            position: { x: this.syncProperties.x, y: this.syncProperties.y, z: this.syncProperties.z },
+            rotation: { x: this.syncProperties.rotationX, y: this.syncProperties.rotationY, z: this.syncProperties.rotationZ },
+            velocity: { x: this.syncProperties.velocityX, y: this.syncProperties.velocityY, z: this.syncProperties.velocityZ },
+            vehicleType: this.syncProperties.vehicleType,
+            heading: this.syncProperties.heading,
+            tiltX: this.syncProperties.tiltX,
+            tiltZ: this.syncProperties.tiltZ,
+            targetAltitude: this.syncProperties.targetAltitude,
+            occupants: this.syncProperties.occupants
+        };
+    }
+
+    applySyncData(data) {
+        if (data.position) {
+            this.syncProperties.x = data.position.x;
+            this.syncProperties.y = data.position.y;
+            this.syncProperties.z = data.position.z;
+        }
+        if (data.rotation) {
+            this.syncProperties.rotationX = data.rotation.x;
+            this.syncProperties.rotationY = data.rotation.y;
+            this.syncProperties.rotationZ = data.rotation.z;
+        }
+        if (data.velocity) {
+            this.syncProperties.velocityX = data.velocity.x;
+            this.syncProperties.velocityY = data.velocity.y;
+            this.syncProperties.velocityZ = data.velocity.z;
+        }
+        if (data.vehicleType) this.syncProperties.vehicleType = data.vehicleType;
+        if (data.heading !== undefined) this.syncProperties.heading = data.heading;
+        if (data.tiltX !== undefined) this.syncProperties.tiltX = data.tiltX;
+        if (data.tiltZ !== undefined) this.syncProperties.tiltZ = data.tiltZ;
+        if (data.targetAltitude !== undefined) this.syncProperties.targetAltitude = data.targetAltitude;
+        if (data.occupants) this.syncProperties.occupants = data.occupants;
     }
 }
 

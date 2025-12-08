@@ -339,6 +339,18 @@ function registerLocalPlayer(username) {
     // Connect war manager to network for unit syncing
     warManager.setNetworkManager(networkManager);
 
+    // Connect vehicle manager to network for vehicle syncing
+    vehicleManager.setNetworkManager(networkManager);
+
+    // If we're the host, register existing vehicles with the network
+    if (networkManager.isHost) {
+        for (const vehicle of vehicleManager.vehicles) {
+            if (!vehicle.networkId) {
+                vehicleManager.registerVehicleNetwork(vehicle);
+            }
+        }
+    }
+
     // Broadcast player join
     networkManager.broadcast(MessageType.PLAYER_JOIN, {
         username: username,

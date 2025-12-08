@@ -1,4 +1,5 @@
 import { getTerrainHeight } from './terrain.js';
+import { NetworkEntityType, NetworkVehicle } from './network-manager.js';
 
 export class VehicleManager {
     constructor(scene, physics) {
@@ -8,13 +9,131 @@ export class VehicleManager {
         this.projectiles = [];
         this.bombs = [];
         this.raycaster = new THREE.Raycaster();
+        this.networkManager = null;
+        this.vehicleSyncInterval = 0.05; // 50ms = 20 updates/sec
+        this.lastSyncTime = 0;
     }
 
-    spawnStartingVehicles(origin) {
+    setNetworkManager(networkManager) {
+        this.networkManager = networkManager;
+        if (networkManager) {
+            this.setupNetworkHandlers();
+        }
+    }
+
+    setupNetworkHandlers() {
+        this.networkManager.registerEntityHandler(NetworkEntityType.VEHICLE, {
+            spawn: (data, clientId) => this.handleNetworkVehicleSpawn(data, clientId),
+            update: (entity, data, timestamp) => this.handleNetworkVehicleUpdate(entity, data, timestamp),
+            destroy: (entity) => this.handleNetworkVehicleDestroy(entity)
+        });
+    }
+
+    handleNetworkVehicleSpawn(data, clientId) {
+        // Find matching local vehicle by networkId or spawn position
+        let vehicle = this.vehicles.find(v => v.networkId === data.id);
+        if (!vehicle) {
+            // Spawn new vehicle from network
+            const pos = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
+            if (data.vehicleType === 'tank') {
+                vehicle = this.spawnTank(pos);
+            } else if (data.vehicleType === 'helicopter') {
+                vehicle = this.spawnHelicopter(pos);
+            } else if (data.vehicleType === 'jeep') {
+                vehicle = this.spawnJeep(pos);
+            }
+            if (vehicle) {
+                vehicle.networkId = data.id;
+                vehicle.isRemote = true;
+            }
+        }
+        const networkEntity = new NetworkVehicle(data.id);
+        networkEntity.vehicleRef = vehicle;
+        return networkEntity;
+    }
+
+    handleNetworkVehicleUpdate(entity, data, timestamp) {
+        const vehicle = entity.vehicleRef;
+        if (!vehicle || !vehicle.isRemote) return;
+
+        // Apply interpolated position
+        if (data.position) {
+            vehicle.body.position.x = THREE.MathUtils.lerp(vehicle.body.position.x, data.position.x, 0.3);
+            vehicle.body.position.y = THREE.MathUtils.lerp(vehicle.body.position.y, data.position.y, 0.3);
+            vehicle.body.position.z = THREE.MathUtils.lerp(vehicle.body.position.z, data.position.z, 0.3);
+        }
+        if (data.velocity) {
+            vehicle.body.velocity.set(data.velocity.x, data.velocity.y, data.velocity.z);
+        }
+        if (data.heading !== undefined) {
+            vehicle.heading = THREE.MathUtils.lerp(vehicle.heading, data.heading, 0.4);
+        }
+        if (data.rotation) {
+            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, data.rotation.x, 0.3);
+            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, data.rotation.z, 0.3);
+        }
+        if (data.tiltX !== undefined) vehicle.tiltX = data.tiltX;
+        if (data.tiltZ !== undefined) vehicle.tiltZ = data.tiltZ;
+        if (data.targetAltitude !== undefined) vehicle.targetAltitude = data.targetAltitude;
+    }
+
+    handleNetworkVehicleDestroy(entity) {
+        const vehicle = entity.vehicleRef;
+        if (!vehicle) return;
+        const idx = this.vehicles.indexOf(vehicle);
+        if (idx >= 0) {
+            this.scene.remove(vehicle.mesh);
+            this.vehicles.splice(idx, 1);
+        }
+    }
+
+    registerVehicleNetwork(vehicle) {
+        if (!this.networkManager || !this.networkManager.isConnected) return;
+
+        const networkEntity = new NetworkVehicle();
+        networkEntity.vehicleRef = vehicle;
+        networkEntity.syncProperties.vehicleType = vehicle.type;
+        vehicle.networkId = networkEntity.networkId;
+        vehicle.networkEntity = networkEntity;
+        vehicle.isRemote = false;
+
+        this.networkManager.registerEntity(networkEntity);
+    }
+
+    syncVehicleState(vehicle) {
+        if (!this.networkManager || !this.networkManager.isConnected) return;
+        if (vehicle.isRemote) return; // Don't sync remote vehicles
+
+        const occupants = vehicle.seats.map((seat, idx) => ({
+            seatIndex: idx,
+            occupantId: seat.occupant ? (seat.occupant.networkId || this.networkManager.clientId) : null
+        })).filter(o => o.occupantId);
+
+        this.networkManager.queueEntityUpdate(vehicle.networkId, {
+            position: { x: vehicle.body.position.x, y: vehicle.body.position.y, z: vehicle.body.position.z },
+            rotation: { x: vehicle.mesh.rotation.x, y: vehicle.mesh.rotation.y, z: vehicle.mesh.rotation.z },
+            velocity: { x: vehicle.body.velocity.x, y: vehicle.body.velocity.y, z: vehicle.body.velocity.z },
+            vehicleType: vehicle.type,
+            heading: vehicle.heading,
+            tiltX: vehicle.tiltX || 0,
+            tiltZ: vehicle.tiltZ || 0,
+            targetAltitude: vehicle.targetAltitude || 0,
+            occupants
+        });
+    }
+
+    spawnStartingVehicles(origin, registerNetwork = true) {
         const offset = new THREE.Vector3(origin.x, origin.y, origin.z);
-        this.spawnTank(offset.clone().add(new THREE.Vector3(12, 0, 8)));
-        this.spawnHelicopter(offset.clone().add(new THREE.Vector3(-15, 0, 12)));
-        this.spawnJeep(offset.clone().add(new THREE.Vector3(8, 0, -14)));
+        const tank = this.spawnTank(offset.clone().add(new THREE.Vector3(12, 0, 8)));
+        const heli = this.spawnHelicopter(offset.clone().add(new THREE.Vector3(-15, 0, 12)));
+        const jeep = this.spawnJeep(offset.clone().add(new THREE.Vector3(8, 0, -14)));
+
+        // Register vehicles with network if connected
+        if (registerNetwork && this.networkManager && this.networkManager.isHost) {
+            this.registerVehicleNetwork(tank);
+            this.registerVehicleNetwork(heli);
+            this.registerVehicleNetwork(jeep);
+        }
     }
 
     spawnTank(position) {
@@ -50,12 +169,16 @@ export class VehicleManager {
         const body = this.physics.registerBody({
             position: group.position,
             velocity: new THREE.Vector3(),
+            angularVelocity: new THREE.Vector3(),
+            rotation: new THREE.Euler(0, 0, 0, 'YXZ'),
             radius: 2.3,
             height: 2.4,
             mass: 8000,
-            damping: 0.5,
-            friction: 0.1,
-            bounciness: 0.05
+            damping: 0.3,
+            angularDamping: 0.92,
+            friction: 0.2,
+            bounciness: 0.15,
+            enableAngularPhysics: true
         });
 
         const vehicle = {
@@ -67,15 +190,14 @@ export class VehicleManager {
             tilt: new THREE.Euler(0, 0, 0, 'YXZ'),
             suspension: {
                 angularVelocity: new THREE.Vector3(),
-                // Define 4 corners for terrain sampling relative to center
                 wheelOffsets: [
                     new THREE.Vector3(2.5, 0, 3.5),   // Front Left
                     new THREE.Vector3(-2.5, 0, 3.5),  // Front Right
                     new THREE.Vector3(2.5, 0, -3.5),  // Back Left
                     new THREE.Vector3(-2.5, 0, -3.5)  // Back Right
                 ],
-                stiffness: 12.0,
-                damping: 8.0, // Increased damping for less wobble
+                stiffness: 15.0,
+                damping: 6.0,
                 restHeight: 1.25
             },
             turretYaw: 0,
@@ -174,12 +296,16 @@ export class VehicleManager {
         const body = this.physics.registerBody({
             position: group.position,
             velocity: new THREE.Vector3(),
+            angularVelocity: new THREE.Vector3(),
+            rotation: new THREE.Euler(0, 0, 0, 'YXZ'),
             radius: 2.4,
             height: 2.4,
             mass: 2500,
-            damping: 0.3,
-            friction: 0.1,
-            bounciness: 0.1
+            damping: 0.25,
+            angularDamping: 0.90,
+            friction: 0.25,
+            bounciness: 0.2,
+            enableAngularPhysics: true
         });
 
         const vehicle = {
@@ -197,8 +323,8 @@ export class VehicleManager {
                     new THREE.Vector3(2.5, 0, -3.5),  // BL
                     new THREE.Vector3(-2.5, 0, -3.5)  // BR
                 ],
-                stiffness: 15.0,
-                damping: 7.0, // Increased damping for less wobble
+                stiffness: 18.0,
+                damping: 5.0,
                 restHeight: 1.1
             },
             seats: [
@@ -297,16 +423,35 @@ export class VehicleManager {
     }
 
     update(delta) {
+        this.lastSyncTime += delta;
+        const shouldSync = this.lastSyncTime >= this.vehicleSyncInterval;
+
         for (const vehicle of this.vehicles) {
-            if (vehicle.type === 'tank' || vehicle.type === 'jeep') {
-                this.updateGroundVehicle(vehicle, delta);
-            } else if (vehicle.type === 'helicopter') {
-                this.updateHelicopter(vehicle, delta);
+            // Skip physics for remote vehicles (they're controlled by network)
+            if (!vehicle.isRemote) {
+                if (vehicle.type === 'tank' || vehicle.type === 'jeep') {
+                    this.updateGroundVehicle(vehicle, delta);
+                } else if (vehicle.type === 'helicopter') {
+                    this.updateHelicopter(vehicle, delta);
+                }
+            } else {
+                // For remote vehicles, just update the mesh position from physics body
+                vehicle.mesh.position.copy(vehicle.body.position);
+                vehicle.mesh.rotation.y = vehicle.heading;
             }
 
             vehicle.weaponCooldown = Math.max(0, vehicle.weaponCooldown - delta);
             vehicle.mgCooldown = Math.max(0, vehicle.mgCooldown - delta);
             vehicle.bombCooldown = Math.max(0, vehicle.bombCooldown - delta);
+
+            // Sync vehicle state over network
+            if (shouldSync && !vehicle.isRemote && vehicle.networkId) {
+                this.syncVehicleState(vehicle);
+            }
+        }
+
+        if (shouldSync) {
+            this.lastSyncTime = 0;
         }
 
         this.updateProjectiles(delta);
@@ -316,160 +461,243 @@ export class VehicleManager {
     updateGroundVehicle(vehicle, delta) {
         const body = vehicle.body;
         const susp = vehicle.suspension;
-        
+
         // --- Networked Control Check ---
         const driverSeat = vehicle.seats.find(s => s.role === 'driver');
         const isBeingDriven = driverSeat && driverSeat.occupant;
-        
-        // Only apply rotation/input physics if the driver is present
-        if (isBeingDriven) {
-            const surfaceFriction = body.grounded ? 0.99 : 0.998;
-            body.velocity.x *= surfaceFriction;
-            body.velocity.z *= surfaceFriction;
 
-            // --- REALISTIC 4-POINT SUSPENSION (Keep existing logic for now) ---
-            
-            // 1. Calculate World Positions of Wheels
-            const cosYaw = Math.cos(vehicle.heading);
-            const sinYaw = Math.sin(vehicle.heading);
-            
-            const calcWheelHeight = (offsetX, offsetZ) => {
-                // Transform local wheel offset to world space based on heading
-                const wx = offsetX * cosYaw - offsetZ * sinYaw;
-                const wz = offsetX * sinYaw + offsetZ * cosYaw;
-                return getTerrainHeight(body.position.x + wx, body.position.z + wz);
-            };
+        // Calculate wheel contact points
+        const cosYaw = Math.cos(vehicle.heading);
+        const sinYaw = Math.sin(vehicle.heading);
 
-            const hFL = calcWheelHeight(susp.wheelOffsets[0].x, susp.wheelOffsets[0].z);
-            const hFR = calcWheelHeight(susp.wheelOffsets[1].x, susp.wheelOffsets[1].z);
-            const hBL = calcWheelHeight(susp.wheelOffsets[2].x, susp.wheelOffsets[2].z);
-            const hBR = calcWheelHeight(susp.wheelOffsets[3].x, susp.wheelOffsets[3].z);
+        const calcWheelWorldPos = (offsetX, offsetZ) => {
+            const wx = offsetX * cosYaw - offsetZ * sinYaw;
+            const wz = offsetX * sinYaw + offsetZ * cosYaw;
+            return new THREE.Vector3(
+                body.position.x + wx,
+                body.position.y,
+                body.position.z + wz
+            );
+        };
 
-            const avgGroundHeight = (hFL + hFR + hBL + hBR) / 4;
+        const calcWheelHeight = (offsetX, offsetZ) => {
+            const wx = offsetX * cosYaw - offsetZ * sinYaw;
+            const wz = offsetX * sinYaw + offsetZ * cosYaw;
+            return getTerrainHeight(body.position.x + wx, body.position.z + wz);
+        };
 
-            // 2. Calculate Slope Gradients
-            const frontH = (hFL + hFR) / 2;
-            const backH = (hBL + hBR) / 2;
-            const leftH = (hFL + hBL) / 2;
-            const rightH = (hFR + hBR) / 2;
+        const hFL = calcWheelHeight(susp.wheelOffsets[0].x, susp.wheelOffsets[0].z);
+        const hFR = calcWheelHeight(susp.wheelOffsets[1].x, susp.wheelOffsets[1].z);
+        const hBL = calcWheelHeight(susp.wheelOffsets[2].x, susp.wheelOffsets[2].z);
+        const hBR = calcWheelHeight(susp.wheelOffsets[3].x, susp.wheelOffsets[3].z);
 
-            const length = Math.abs(susp.wheelOffsets[0].z - susp.wheelOffsets[2].z);
-            const width = Math.abs(susp.wheelOffsets[0].x - susp.wheelOffsets[1].x);
+        const avgGroundHeight = (hFL + hFR + hBL + hBR) / 4;
+        const heightAboveGround = body.position.y - avgGroundHeight;
 
-            // CORRECTED PITCH: If Back is higher than Front (incline up), we want a positive X-rotation (pitch up)
-            const targetPitch = Math.atan2(backH - frontH, length); 
+        // Determine if vehicle is airborne
+        const isAirborne = heightAboveGround > susp.restHeight + 0.5;
 
-            // Roll: If Left is higher than Right, we tilt roll towards the right (Negative Z rotation)
-            const targetRoll = Math.atan2(leftH - rightH, width); 
+        // Calculate terrain slope
+        const frontH = (hFL + hFR) / 2;
+        const backH = (hBL + hBR) / 2;
+        const leftH = (hFL + hBL) / 2;
+        const rightH = (hFR + hBR) / 2;
 
-            // 3. Spring Dynamics (Hooke's Law)
-            const pitchError = targetPitch - vehicle.tilt.x;
-            const rollError = targetRoll - vehicle.tilt.z;
+        const length = Math.abs(susp.wheelOffsets[0].z - susp.wheelOffsets[2].z);
+        const width = Math.abs(susp.wheelOffsets[0].x - susp.wheelOffsets[1].x);
 
-            // Apply springs
-            susp.angularVelocity.x += (pitchError * susp.stiffness - susp.angularVelocity.x * susp.damping) * delta;
-            susp.angularVelocity.z += (rollError * susp.stiffness - susp.angularVelocity.z * susp.damping) * delta;
+        const terrainPitch = Math.atan2(backH - frontH, length);
+        const terrainRoll = Math.atan2(leftH - rightH, width);
 
-            // Apply dynamic forces (Centripetal roll, Acceleration pitch)
-            if (body.grounded) {
-                susp.angularVelocity.multiplyScalar(0.99); 
-            } else {
-                susp.angularVelocity.x *= 0.95;
-                susp.angularVelocity.z *= 0.95;
-            }
+        if (isAirborne) {
+            // --- AIRBORNE PHYSICS (Tumbling) ---
+            // Apply angular momentum from body's angular velocity
+            vehicle.tilt.x += body.angularVelocity.x * delta;
+            vehicle.tilt.z += body.angularVelocity.z * delta;
 
-            vehicle.tilt.x += susp.angularVelocity.x * delta;
-            vehicle.tilt.z += susp.angularVelocity.z * delta;
-            
-            // 4. Update Transform
-            vehicle.mesh.position.copy(body.position);
-            
-            if (body.grounded) {
-                 const targetY = avgGroundHeight + susp.restHeight;
-                 vehicle.mesh.position.y = THREE.MathUtils.lerp(vehicle.mesh.position.y, targetY, delta * 15);
-            }
+            // Slow air rotation slightly
+            body.angularVelocity.multiplyScalar(0.995);
 
-            vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
+            // Apply slight self-righting tendency (like GTA vehicles)
+            const rightingForce = 0.5;
+            body.angularVelocity.x -= vehicle.tilt.x * rightingForce * delta;
+            body.angularVelocity.z -= vehicle.tilt.z * rightingForce * delta;
         } else {
-            // Apply neutral rotation and high drag if unoccupied
-            if (body.grounded) {
+            // --- GROUNDED PHYSICS ---
+
+            // Check if vehicle is flipped (upside down)
+            const isFlipped = Math.abs(vehicle.tilt.x) > Math.PI / 2 || Math.abs(vehicle.tilt.z) > Math.PI / 2;
+
+            if (isFlipped) {
+                // Flipped vehicle - apply torque to try to right itself slowly
+                const flipRecoveryRate = 0.3;
+                body.angularVelocity.x -= Math.sign(vehicle.tilt.x) * flipRecoveryRate * delta;
+                body.angularVelocity.z -= Math.sign(vehicle.tilt.z) * flipRecoveryRate * delta;
+
+                vehicle.tilt.x += body.angularVelocity.x * delta;
+                vehicle.tilt.z += body.angularVelocity.z * delta;
+
+                // High friction when flipped
                 body.velocity.x *= 0.95;
                 body.velocity.z *= 0.95;
+            } else {
+                // Normal grounded physics
+                const surfaceFriction = body.grounded ? 0.98 : 0.995;
+                body.velocity.x *= surfaceFriction;
+                body.velocity.z *= surfaceFriction;
+
+                // Calculate target tilt based on terrain
+                const targetPitch = terrainPitch;
+                const targetRoll = terrainRoll;
+
+                // Spring dynamics for suspension
+                const pitchError = targetPitch - vehicle.tilt.x;
+                const rollError = targetRoll - vehicle.tilt.z;
+
+                // Transfer some momentum to angular velocity when hitting bumps
+                const speed = Math.hypot(body.velocity.x, body.velocity.z);
+                const bumpTransfer = speed * 0.02;
+
+                if (Math.abs(pitchError) > 0.1) {
+                    body.angularVelocity.x += pitchError * bumpTransfer * delta;
+                }
+                if (Math.abs(rollError) > 0.1) {
+                    body.angularVelocity.z += rollError * bumpTransfer * delta;
+                }
+
+                // Apply suspension spring forces
+                susp.angularVelocity.x += (pitchError * susp.stiffness - susp.angularVelocity.x * susp.damping) * delta;
+                susp.angularVelocity.z += (rollError * susp.stiffness - susp.angularVelocity.z * susp.damping) * delta;
+
+                // Combine suspension and rigid body angular velocity
+                const combinedAngularX = susp.angularVelocity.x + body.angularVelocity.x * 0.3;
+                const combinedAngularZ = susp.angularVelocity.z + body.angularVelocity.z * 0.3;
+
+                vehicle.tilt.x += combinedAngularX * delta;
+                vehicle.tilt.z += combinedAngularZ * delta;
+
+                // Dampen rigid body angular velocity when grounded
+                body.angularVelocity.x *= 0.92;
+                body.angularVelocity.z *= 0.92;
+
+                // Clamp tilt angles when grounded (can still flip if going fast)
+                const maxGroundTilt = 0.6; // ~35 degrees
+                if (Math.abs(vehicle.tilt.x) > maxGroundTilt && Math.abs(body.angularVelocity.x) < 2) {
+                    vehicle.tilt.x = THREE.MathUtils.clamp(vehicle.tilt.x, -maxGroundTilt, maxGroundTilt);
+                }
+                if (Math.abs(vehicle.tilt.z) > maxGroundTilt && Math.abs(body.angularVelocity.z) < 2) {
+                    vehicle.tilt.z = THREE.MathUtils.clamp(vehicle.tilt.z, -maxGroundTilt, maxGroundTilt);
+                }
+
+                // Apply ground height
+                if (body.grounded) {
+                    const targetY = avgGroundHeight + susp.restHeight;
+                    const heightDiff = targetY - body.position.y;
+                    if (heightDiff > 0) {
+                        body.position.y = THREE.MathUtils.lerp(body.position.y, targetY, delta * 12);
+                    }
+                }
             }
-            vehicle.mesh.position.copy(body.position);
-            // Slowly level out the visual mesh tilt when unoccupied
-            vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, 0, delta * 2);
-            vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, 0, delta * 2);
-            vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
         }
+
+        // If driven, update heading based on angular Y velocity
+        if (isBeingDriven) {
+            vehicle.heading += body.angularVelocity.y * delta;
+        } else {
+            // Unoccupied vehicle - apply higher friction
+            body.velocity.x *= 0.96;
+            body.velocity.z *= 0.96;
+            body.angularVelocity.y *= 0.95;
+        }
+
+        // Update mesh transform
+        vehicle.mesh.position.copy(body.position);
+        vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
+
+        // Sync body rotation for network
+        body.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
     }
 
     updateHelicopter(vehicle, delta) {
         const body = vehicle.body;
         vehicle.rotor.rotation.y += delta * 15;
-        
+
         // --- Networked Control Check ---
         const pilotSeat = vehicle.seats.find(s => s.role === 'pilot');
         const occupied = pilotSeat && pilotSeat.occupant;
 
         // --- THRUST VECTORING PHYSICS ---
-        
+
         if (occupied) {
             // 1. Altitude Control (Collective)
             const ground = getTerrainHeight(body.position.x, body.position.z);
             const minAltitude = ground + 1.6;
-            
+
             const desiredAltitude = Math.max(vehicle.targetAltitude, minAltitude);
             vehicle.targetAltitude = THREE.MathUtils.lerp(vehicle.targetAltitude, desiredAltitude, delta * 2);
-            
-            const error = vehicle.targetAltitude - body.position.y;
-            const targetVertical = error * 2.0 + vehicle.lift * 2.0; 
-            
-            body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, delta * 3);
 
-            // 2. Horizontal Movement (Cyclic)
-            
+            const error = vehicle.targetAltitude - body.position.y;
+            const targetVertical = error * 3.0 + vehicle.lift * 4.0;
+
+            body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, delta * 4);
+
+            // 2. Horizontal Movement (Cyclic) - PITCH CONTROLS FORWARD MOVEMENT
             const cosY = Math.cos(vehicle.heading);
             const sinY = Math.sin(vehicle.heading);
 
-            // FIX: Ensure correct forward vector. If -Z is forward, use +sin/cos for X/Z
-            // Three.js world default is typically +Z = Backward, -Z = Forward
-            // W/Forward: vehicle.heading=0 (looking down -Z axis). sinY=0, cosY=1. Forward = (0, 0, -1). 
-            // -vehicle.tiltX * speedFactor * delta applied to forward results in positive velocity down -Z axis.
-            const forward = new THREE.Vector3(-sinY, 0, -cosY); // Corrected vector definition relative to heading
+            // Forward vector based on heading (in Three.js, default forward is -Z)
+            const forward = new THREE.Vector3(sinY, 0, cosY);
             const right = new THREE.Vector3(cosY, 0, -sinY);
 
-            const speedFactor = 60.0; 
-            
-            // Apply thrust based on tilt (Pitch down = move forward)
-            body.velocity.addScaledVector(forward, -vehicle.tiltX * speedFactor * delta);
-            
-            // Apply strafe thrust (Roll)
-            body.velocity.addScaledVector(right, -vehicle.tiltZ * speedFactor * delta);
+            // Much higher thrust for responsive movement
+            const thrustPower = 120.0;
+            const strafepower = 80.0;
 
-            // Drag (Air resistance)
-            body.velocity.x *= 0.98;
-            body.velocity.z *= 0.98;
+            // tiltX > 0 = pitched forward = move forward
+            // Apply thrust directly proportional to tilt angle
+            const forwardThrust = vehicle.tiltX * thrustPower;
+            const strafeThrust = vehicle.tiltZ * strafepower;
 
-            // Visual Rotation Lag - Visual tilt matches input angle
-            const targetRotX = vehicle.tiltX; 
-            const targetRotZ = vehicle.tiltZ;
-            
-            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, targetRotX, delta * 4);
-            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, targetRotZ, delta * 4);
+            // Apply acceleration (not just velocity)
+            body.velocity.x += forward.x * forwardThrust * delta;
+            body.velocity.z += forward.z * forwardThrust * delta;
+            body.velocity.x += right.x * strafeThrust * delta;
+            body.velocity.z += right.z * strafeThrust * delta;
+
+            // Air drag - slows down when not thrusting
+            const dragFactor = 0.96;
+            body.velocity.x *= dragFactor;
+            body.velocity.z *= dragFactor;
+
+            // Max speed limit
+            const maxSpeed = 45;
+            const speed = Math.hypot(body.velocity.x, body.velocity.z);
+            if (speed > maxSpeed) {
+                const scale = maxSpeed / speed;
+                body.velocity.x *= scale;
+                body.velocity.z *= scale;
+            }
+
+            // Visual tilt - nose pitches down when moving forward
+            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, delta * 6);
+            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, -vehicle.tiltZ, delta * 6);
             vehicle.mesh.rotation.y = vehicle.heading;
 
         } else {
-            // --- UNMANNED PHYSICS (Only gravity/drag applies) ---
+            // --- UNMANNED PHYSICS (falling/crashing) ---
             vehicle.lift = 0;
-            vehicle.targetAltitude = body.position.y; 
-            
-            body.velocity.x *= 0.99;
-            body.velocity.z *= 0.99;
-            
-            // Slowly level out visually if abandoned in air
-            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, 0, delta);
-            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, 0, delta);
+            vehicle.targetAltitude = body.position.y - 5; // Fall
+
+            // Decay tilt values
+            vehicle.tiltX *= 0.95;
+            vehicle.tiltZ *= 0.95;
+
+            body.velocity.x *= 0.995;
+            body.velocity.z *= 0.995;
+
+            // Auto-level slowly
+            vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, 0, delta * 0.5);
+            vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, 0, delta * 0.5);
             vehicle.mesh.rotation.y = vehicle.heading;
         }
 
