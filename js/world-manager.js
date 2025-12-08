@@ -865,6 +865,11 @@ export class WorldManager {
                             map: createTexture('concrete', '#3c3c3c')
                         });
 
+                        // Use a consistent tower offset for both the foundation and
+                        // the structure so geometry is initialized before it is
+                        // referenced.
+                        const offset = (towerCount === 1) ? 0 : (i === 0 ? -buildable * 0.22 : buildable * 0.22);
+
                         // Create a terrain-following foundation so the tower never
                         // floats above uneven ground. The foundation depth is tied to
                         // the local slope to bridge small ravines automatically.
@@ -882,8 +887,6 @@ export class WorldManager {
                             new THREE.BoxGeometry(footprint, h, footprint),
                             mat
                         );
-
-                        const offset = (towerCount === 1) ? 0 : (i === 0 ? -buildable * 0.22 : buildable * 0.22);
                         building.position.set(centerX + offset, baseHeight + sidewalkHeight + h / 2, centerZ + offset);
                         building.castShadow = true;
                         group.add(building);
