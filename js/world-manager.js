@@ -1,5 +1,5 @@
 import { CONFIG, URBAN_BIOMES, getUrbanBiomeType } from './config.js';
-import { hash, seededRandom, getTerrainHeight, biomeInfoAtPosition, getCityInfluence, getUrbanBiomeAtPosition } from './terrain.js';
+import { hash, seededRandom, getTerrainHeight, biomeInfoAtPosition, getCityInfluence, getUrbanBiomeAtPosition, sampleTerrain } from './terrain.js';
 import { createTexture } from './textures.js';
 import { Character } from './character.js';
 import { InteractionManager } from './interaction-manager.js';
@@ -14,6 +14,7 @@ export class WorldManager {
         this.physics = physics;
         this.interactionManager = new InteractionManager(scene);
         this.interactionManager.setHeightSampler((x, z) => getTerrainHeight(x, z));
+        this.chunkMetadata = new Map();
     }
 
     meshCollider(mesh, padding = 0.01) {
@@ -53,11 +54,16 @@ export class WorldManager {
             this.scene.remove(this.chunks[key]);
             this.physics.removeChunkColliders(key);
             this.interactionManager.clearForChunk(key);
+            this.chunkMetadata.delete(key);
             delete this.chunks[key];
         });
 
         this.npcs.forEach(npc => npc.updateNPC(delta));
         this.updateLocationHUD(playerPos, cx, cz);
+    }
+
+    getChunkMeta(key) {
+        return this.chunkMetadata.get(key);
     }
 
     findCitySpawnPoint() {
@@ -179,12 +185,133 @@ export class WorldManager {
         return false;
     }
 
+    buildRoadMeshesForChunk(group, roadPositions, colliders) {
+        const roadMaterial = new THREE.MeshLambertMaterial({ map: createTexture('asphalt', '#151515') });
+        roadPositions.forEach(road => {
+            const steps = 6;
+            const isVertical = road.type === 'vertical';
+            const length = road.length;
+            const width = road.width;
+            const halfL = length / 2;
+            const halfW = width / 2;
+
+            // Sample terrain heights at the road endpoints to tilt the mesh and build
+            // natural ramps.
+            const centerX = road.centerX;
+            const centerZ = road.centerZ;
+            const startX = centerX + (isVertical ? 0 : -halfL);
+            const startZ = centerZ + (isVertical ? -halfL : 0);
+            const endX = centerX + (isVertical ? 0 : halfL);
+            const endZ = centerZ + (isVertical ? halfL : 0);
+            const startSample = sampleTerrain(startX, startZ);
+            const endSample = sampleTerrain(endX, endZ);
+
+            const avgHeight = (startSample.height + endSample.height) / 2;
+            const roadGeo = new THREE.PlaneGeometry(width, length, 1, steps);
+            const roadVerts = roadGeo.attributes.position.array;
+
+            for (let i = 0; i < roadVerts.length; i += 3) {
+                const lx = roadVerts[i];
+                const ly = roadVerts[i + 1];
+                const lz = roadVerts[i + 2];
+                // Orient plane: for Three.js planes, +Y is up before rotation.
+                const worldX = centerX + (isVertical ? lx : lz);
+                const worldZ = centerZ + (isVertical ? lz : lx);
+                const { height } = sampleTerrain(worldX, worldZ);
+                roadVerts[i + 2] = height - avgHeight;
+            }
+
+            roadGeo.computeVertexNormals();
+            const roadMesh = new THREE.Mesh(roadGeo, roadMaterial);
+            roadMesh.rotation.x = -Math.PI / 2;
+            roadMesh.position.set(centerX, avgHeight + 0.02, centerZ);
+            roadMesh.receiveShadow = true;
+            roadMesh.castShadow = false;
+            group.add(roadMesh);
+
+            const collider = this.meshCollider(roadMesh, 0.05);
+            if (collider) colliders.push(collider);
+
+            // Add raised curbs along each side to visually anchor the road into the
+            // landscape and close tiny gaps left by height differences between
+            // adjacent blocks.
+            ['left', 'right'].forEach(side => {
+                const curbGeo = new THREE.PlaneGeometry(length, 0.6, steps, 1);
+                const curbVerts = curbGeo.attributes.position.array;
+                for (let i = 0; i < curbVerts.length; i += 3) {
+                    const lx = curbVerts[i] - halfL;
+                    const lz = curbVerts[i + 1] - 0.3;
+                    const wx = centerX + (isVertical ? (side === 'left' ? -halfW : halfW) : lx);
+                    const wz = centerZ + (isVertical ? lz : (side === 'left' ? -halfW : halfW));
+                    const { height } = sampleTerrain(wx, wz);
+                    curbVerts[i + 2] = height - avgHeight;
+                }
+                curbGeo.computeVertexNormals();
+                const curb = new THREE.Mesh(curbGeo, new THREE.MeshLambertMaterial({ color: 0x222222, side: THREE.DoubleSide }));
+                curb.rotation.x = -Math.PI / 2;
+                curb.position.set(centerX, avgHeight + 0.05, centerZ);
+                curb.receiveShadow = true;
+                group.add(curb);
+            });
+        });
+    }
+
+    stitchChunkBorders(chunkKey, group) {
+        const [cx, cz] = chunkKey.split(',').map(Number);
+        const currentMeta = this.chunkMetadata.get(chunkKey);
+        if (!currentMeta) return;
+
+        const directions = [
+            { dx: 1, dz: 0, axis: 'x', sign: 1 },
+            { dx: -1, dz: 0, axis: 'x', sign: -1 },
+            { dx: 0, dz: 1, axis: 'z', sign: 1 },
+            { dx: 0, dz: -1, axis: 'z', sign: -1 }
+        ];
+
+        directions.forEach(dir => {
+            const neighborKey = `${cx + dir.dx},${cz + dir.dz}`;
+            const neighborMeta = this.chunkMetadata.get(neighborKey);
+            if (!neighborMeta) return;
+
+            const edgeGeo = new THREE.PlaneGeometry(CONFIG.chunkSize, 4, 12, 1);
+            const verts = edgeGeo.attributes.position.array;
+            for (let i = 0; i < verts.length; i += 3) {
+                const lx = verts[i] - CONFIG.chunkSize / 2;
+                const lz = verts[i + 1] - 2;
+                const wx = dir.axis === 'x' ? currentMeta.center.x + (dir.sign * CONFIG.chunkSize / 2) : currentMeta.center.x + lx;
+                const wz = dir.axis === 'z' ? currentMeta.center.z + (dir.sign * CONFIG.chunkSize / 2) : currentMeta.center.z + lz;
+
+                const { height: selfHeight } = sampleTerrain(wx, wz);
+                const { height: neighborHeight } = sampleTerrain(
+                    wx + dir.dx * CONFIG.chunkSize,
+                    wz + dir.dz * CONFIG.chunkSize
+                );
+
+                // Interpolate from our edge height to the neighbor edge height.
+                const t = (lz + 2) / 4;
+                verts[i + 2] = THREE.MathUtils.lerp(selfHeight, neighborHeight, t) - currentMeta.averageHeight;
+            }
+
+            edgeGeo.computeVertexNormals();
+            const wall = new THREE.Mesh(edgeGeo, new THREE.MeshLambertMaterial({ color: 0x1a1a1a, side: THREE.DoubleSide }));
+            wall.rotation.y = dir.axis === 'x' ? Math.PI / 2 : 0;
+            wall.position.set(
+                currentMeta.center.x + (dir.axis === 'x' ? dir.sign * CONFIG.chunkSize / 2 : 0),
+                currentMeta.averageHeight,
+                currentMeta.center.z + (dir.axis === 'z' ? dir.sign * CONFIG.chunkSize / 2 : 0)
+            );
+            wall.receiveShadow = true;
+            group.add(wall);
+        });
+    }
+
     generateChunk(cx, cz) {
         const group = new THREE.Group();
         const offsetX = cx * CONFIG.chunkSize;
         const offsetZ = cz * CONFIG.chunkSize;
         const centerX = offsetX + CONFIG.chunkSize / 2;
         const centerZ = offsetZ + CONFIG.chunkSize / 2;
+        const chunkKey = `${cx},${cz}`;
 
         // Use CENTER influence to determine consistent urban biome for entire chunk
         // This prevents morphing between settlement types within the same area
@@ -202,25 +329,37 @@ export class WorldManager {
 
         const biome = biomeInfoAtPosition(offsetX, offsetZ);
 
-        // Determine the influence threshold for terrain flattening based on urban biome type
-        const flattenThreshold = urbanBiome ? urbanBiome.influenceThreshold : CONFIG.cityInfluenceThreshold;
-
+        // Build a reusable height field for this chunk so we can share values between
+        // road carving, collision generation, and building placement. This reduces
+        // gaps because every system references the same surface data.
+        const heightField = [];
         for (let i = 0; i < vertices.length; i += 3) {
             const localX = vertices[i];
             const localY = vertices[i + 1];
             const worldX = offsetX + localX + CONFIG.chunkSize / 2;
-            // Account for -90° rotation around X axis: Y becomes -Z
             const worldZ = offsetZ - localY + CONFIG.chunkSize / 2;
-
-            // If this is an urban chunk, flatten terrain consistently
-            if (isUrban) {
-                // For urban areas, use consistent flat terrain
-                vertices[i + 2] = CONFIG.cityPlateauHeight;
-            } else {
-                // For non-urban areas, use natural terrain
-                vertices[i + 2] = getTerrainHeight(worldX, worldZ);
-            }
+            const { height } = sampleTerrain(worldX, worldZ);
+            vertices[i + 2] = height;
+            heightField.push({ x: worldX, z: worldZ, height });
         }
+
+        // Record metadata for debugging and future streaming systems. Other systems
+        // can reuse the averaged height to stitch chunk borders without recomputing
+        // the expensive sampling process.
+        const averageHeight = heightField.reduce((acc, v) => acc + v.height, 0) / heightField.length;
+        const maxHeight = heightField.reduce((acc, v) => Math.max(acc, v.height), -Infinity);
+        const minHeight = heightField.reduce((acc, v) => Math.min(acc, v.height), Infinity);
+        const variance = heightField.reduce((acc, v) => acc + Math.pow(v.height - averageHeight, 2), 0) / heightField.length;
+        this.chunkMetadata.set(chunkKey, {
+            center: { x: centerX, z: centerZ },
+            averageHeight,
+            maxHeight,
+            minHeight,
+            variance,
+            isUrban,
+            urbanBiome,
+            heightField
+        });
 
         groundGeo.computeVertexNormals();
         this.addSkirt(groundGeo);
@@ -240,13 +379,23 @@ export class WorldManager {
         ground.userData.isGround = true;
         group.add(ground);
 
-        const chunkKey = `${cx},${cz}`;
+        // Carve and align road surfaces to the sampled terrain so that city blocks
+        // meet the terrain seamlessly. This is done before buildings so foundations
+        // can sit flush against the road grade.
+        const roadPositions = this.getRoadPositions(offsetX, offsetZ, isCity);
+        if (roadPositions.length > 0) {
+            this.buildRoadMeshesForChunk(group, roadPositions, colliders);
+        }
 
         if (isCity) {
             this.generateCity(group, offsetX, offsetZ, cx, cz, colliders, urbanBiome);
         } else {
             this.generateWilderness(group, offsetX, offsetZ, cx, cz, biome, colliders);
         }
+
+        // Stitch edges to neighboring chunks using cached metadata to avoid gaps when
+        // cities border wilderness or different settlement tiers collide.
+        this.stitchChunkBorders(chunkKey, group);
 
         this.physics.addChunkColliders(chunkKey, colliders);
         this.physics.addChunkGroup(chunkKey, group);
@@ -265,7 +414,7 @@ export class WorldManager {
         const buildingDensity = biomeConfig.buildingDensity;
         const parkChance = biomeConfig.parkChance;
         const sidewalkHeight = 0.15; // Curb height - small enough to step on
-        const baseHeight = CONFIG.cityPlateauHeight;
+        const plateauHeight = CONFIG.cityPlateauHeight;
 
         const startX = ox - ((ox % blockSize + blockSize) % blockSize);
         const startZ = oz - ((oz % blockSize + blockSize) % blockSize);
@@ -275,6 +424,12 @@ export class WorldManager {
                 const buildable = blockSize - roadWidth - 8;
                 const centerX = gx + buildable / 2 + 4;
                 const centerZ = gz + buildable / 2 + 4;
+
+                // Sample the true surface height so that the block sits on the
+                // terrain rather than an abstract plateau. This eliminates gaps when
+                // the surrounding wilderness is higher or lower than the city mask.
+                const { height: surfaceHeight, slope } = sampleTerrain(centerX, centerZ);
+                const baseHeight = THREE.MathUtils.lerp(surfaceHeight, plateauHeight, 0.55);
 
                 // Check if this block position is actually in a city area
                 const blockCityInfluence = getCityInfluence(centerX, centerZ);
@@ -296,6 +451,27 @@ export class WorldManager {
                 );
                 sidewalk.position.set(centerX, baseHeight + sidewalkHeight / 2, centerZ);
                 group.add(sidewalk);
+
+                // Blend the sidewalk edges back into the terrain so the curb rides
+                // over gentle slopes instead of clipping through them. This acts as a
+                // subtle berm around the block and hides minor terrain variations.
+                const pad = new THREE.Mesh(
+                    new THREE.PlaneGeometry(buildable + 10, buildable + 10, 2, 2),
+                    new THREE.MeshLambertMaterial({ color: 0x202020 })
+                );
+                const padVerts = pad.geometry.attributes.position.array;
+                for (let v = 0; v < padVerts.length; v += 3) {
+                    const lx = padVerts[v];
+                    const lz = padVerts[v + 2];
+                    const wx = centerX + lx;
+                    const wz = centerZ + lz;
+                    const { height } = sampleTerrain(wx, wz);
+                    padVerts[v + 1] = (height - baseHeight) + sidewalkHeight * 0.6;
+                }
+                pad.geometry.computeVertexNormals();
+                pad.rotation.x = -Math.PI / 2;
+                pad.position.set(centerX, baseHeight, centerZ);
+                group.add(pad);
 
                 // Add sidewalk collider so players can walk on it
                 const sidewalkCollider = this.meshCollider(sidewalk, 0.01);
@@ -658,6 +834,28 @@ export class WorldManager {
                     // Buildings - height varies by urban biome type
                     const towerCount = isMegacity ? 1 + Math.floor(blockRandom(60) * 3) :
                                        isVillage ? 1 : 1 + Math.floor(blockRandom(60) * 2);
+
+                    // Extremely steep parcels are converted to terraced pads to
+                    // maintain walkability and to prevent voids where towers cannot
+                    // safely stand.
+                    if (slope > 1.2) {
+                        const terraceLevels = 3;
+                        for (let t = 0; t < terraceLevels; t++) {
+                            const terrace = new THREE.Mesh(
+                                new THREE.BoxGeometry(buildable * 0.9, 0.7, buildable * 0.9),
+                                new THREE.MeshLambertMaterial({ color: 0x2b2b2d })
+                            );
+                            terrace.position.set(
+                                centerX,
+                                baseHeight + sidewalkHeight + t * 0.6,
+                                centerZ
+                            );
+                            group.add(terrace);
+                            const terraceCollider = this.meshCollider(terrace, 0.01);
+                            if (terraceCollider) colliders.push(terraceCollider);
+                        }
+                    }
+
                     for (let i = 0; i < towerCount; i++) {
                         const footprint = buildable * (towerCount === 1 ? 1 : 0.55);
                         // Use biome-specific building heights
@@ -666,6 +864,20 @@ export class WorldManager {
                         const mat = new THREE.MeshLambertMaterial({
                             map: createTexture('concrete', '#3c3c3c')
                         });
+
+                        // Create a terrain-following foundation so the tower never
+                        // floats above uneven ground. The foundation depth is tied to
+                        // the local slope to bridge small ravines automatically.
+                        const foundationDepth = THREE.MathUtils.clamp(slope * 6, 0.6, 4.5);
+                        const foundation = new THREE.Mesh(
+                            new THREE.BoxGeometry(footprint * 1.02, foundationDepth, footprint * 1.02),
+                            new THREE.MeshLambertMaterial({ color: 0x2b2d30 })
+                        );
+                        foundation.position.set(centerX + offset, baseHeight + foundationDepth / 2, centerZ + offset);
+                        group.add(foundation);
+                        const foundationCollider = this.meshCollider(foundation, 0.01);
+                        if (foundationCollider) colliders.push(foundationCollider);
+
                         const building = new THREE.Mesh(
                             new THREE.BoxGeometry(footprint, h, footprint),
                             mat
