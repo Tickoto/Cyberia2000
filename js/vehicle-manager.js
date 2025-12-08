@@ -285,46 +285,56 @@ export class VehicleManager {
 
     updateGroundVehicle(vehicle, delta) {
         const body = vehicle.body;
-        const terrainY = getTerrainHeight(body.position.x, body.position.z);
-        const desiredY = terrainY + (vehicle.type === 'tank' ? 1.25 : 1.1);
-        const heightBlend = vehicle.body.grounded ? 0.65 : 0.35;
-        body.position.y = THREE.MathUtils.lerp(body.position.y, desiredY, heightBlend);
-        if (Math.abs(body.position.y - desiredY) < 0.05) {
-            body.position.y = desiredY;
-            body.velocity.y = 0;
-        }
+        const damping = body.grounded ? 0.992 : 0.998;
+        body.velocity.x *= damping;
+        body.velocity.z *= damping;
 
-        body.velocity.x *= 0.995;
-        body.velocity.z *= 0.995;
+        const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading);
+        const up = new THREE.Vector3(0, 1, 0);
+        const align = body.grounded
+            ? new THREE.Quaternion().setFromUnitVectors(up, body.groundNormal.clone().normalize())
+            : new THREE.Quaternion();
+
+        const airborneLean = body.grounded ? new THREE.Quaternion() : new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            THREE.MathUtils.clamp(body.velocity.z * -0.01, -0.35, 0.35),
+            0,
+            THREE.MathUtils.clamp(body.velocity.x * 0.01, -0.35, 0.35)
+        ));
 
         vehicle.mesh.position.copy(body.position);
-        vehicle.mesh.rotation.y = vehicle.heading;
+        vehicle.mesh.quaternion.copy(yaw).multiply(align).multiply(airborneLean);
     }
 
     updateHelicopter(vehicle, delta) {
         const body = vehicle.body;
         vehicle.rotor.rotation.y += delta * 15;
         const ground = getTerrainHeight(body.position.x, body.position.z);
-        const minAltitude = ground + 1.6;
+        const minAltitude = ground + 0.8;
+        const hasPilot = vehicle.seats.some(seat => seat.role === 'pilot' && seat.occupant);
+
+        if (!hasPilot) {
+            vehicle.targetAltitude = THREE.MathUtils.lerp(vehicle.targetAltitude, minAltitude, 0.25);
+            vehicle.lift = THREE.MathUtils.lerp(vehicle.lift, -2, 0.5 * delta);
+        }
+
         vehicle.targetAltitude = Math.max(vehicle.targetAltitude, minAltitude);
 
-        const climb = (vehicle.targetAltitude - body.position.y) * 0.8;
+        const climb = (vehicle.targetAltitude - body.position.y) * 1.1;
         const targetVertical = climb + vehicle.lift;
-        body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, 0.5);
+        body.velocity.y = THREE.MathUtils.lerp(body.velocity.y, targetVertical, 0.6);
 
         body.velocity.x *= 0.985;
         body.velocity.z *= 0.985;
 
-        body.position.addScaledVector(body.velocity, delta);
-        if (body.position.y < minAltitude && vehicle.lift <= 0) {
-            body.position.y = minAltitude;
-            body.velocity.y = 0;
-        }
-
         vehicle.mesh.position.copy(body.position);
-        vehicle.mesh.rotation.y = vehicle.heading;
-        vehicle.mesh.rotation.x = THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2);
-        vehicle.mesh.rotation.z = THREE.MathUtils.lerp(vehicle.mesh.rotation.z, vehicle.tiltZ, 0.2);
+
+        const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading);
+        const tilt = new THREE.Quaternion().setFromEuler(new THREE.Euler(
+            THREE.MathUtils.lerp(vehicle.mesh.rotation.x, vehicle.tiltX, 0.2),
+            0,
+            THREE.MathUtils.lerp(vehicle.mesh.rotation.z, vehicle.tiltZ, 0.2)
+        ));
+        vehicle.mesh.quaternion.copy(yaw).multiply(tilt);
     }
 
     updateProjectiles(delta) {
