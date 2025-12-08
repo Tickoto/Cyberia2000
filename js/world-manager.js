@@ -1121,6 +1121,9 @@ export class WorldManager {
             // Only generate road if it's in a city area
             const roadInfluence = getCityInfluence(roadCenterX, roadCenterZ);
             if (roadInfluence >= CONFIG.cityInfluenceThreshold * 0.9) {
+                const { height: roadSurface } = sampleTerrain(roadCenterX, roadCenterZ);
+                const roadBaseHeight = THREE.MathUtils.lerp(roadSurface, plateauHeight, 0.55);
+
                 // Create main road surface - positioned flush with base terrain
                 const roadGeo = new THREE.PlaneGeometry(roadWidth, CONFIG.chunkSize + blockSize);
                 const roadMat = new THREE.MeshLambertMaterial({
@@ -1129,7 +1132,7 @@ export class WorldManager {
                 });
                 const road = new THREE.Mesh(roadGeo, roadMat);
                 road.rotation.x = -Math.PI / 2;
-                road.position.set(roadCenterX, baseHeight + 0.005, roadCenterZ);
+                road.position.set(roadCenterX, roadBaseHeight + 0.005, roadCenterZ);
                 road.receiveShadow = true;
                 group.add(road);
 
@@ -1142,7 +1145,7 @@ export class WorldManager {
                     new THREE.MeshBasicMaterial({ color: 0xffff00 })
                 );
                 centerLine.rotation.x = -Math.PI / 2;
-                centerLine.position.set(roadCenterX, baseHeight + 0.01, roadCenterZ);
+                centerLine.position.set(roadCenterX, roadBaseHeight + 0.01, roadCenterZ);
                 group.add(centerLine);
 
                 // Add edge lines
@@ -1151,7 +1154,7 @@ export class WorldManager {
                     new THREE.MeshBasicMaterial({ color: 0xffffff })
                 );
                 edgeLine1.rotation.x = -Math.PI / 2;
-                edgeLine1.position.set(roadCenterX - roadWidth / 2 + 0.5, baseHeight + 0.01, roadCenterZ);
+                edgeLine1.position.set(roadCenterX - roadWidth / 2 + 0.5, roadBaseHeight + 0.01, roadCenterZ);
                 group.add(edgeLine1);
 
                 const edgeLine2 = new THREE.Mesh(
@@ -1159,7 +1162,7 @@ export class WorldManager {
                     new THREE.MeshBasicMaterial({ color: 0xffffff })
                 );
                 edgeLine2.rotation.x = -Math.PI / 2;
-                edgeLine2.position.set(roadCenterX + roadWidth / 2 - 0.5, baseHeight + 0.01, roadCenterZ);
+                edgeLine2.position.set(roadCenterX + roadWidth / 2 - 0.5, roadBaseHeight + 0.01, roadCenterZ);
                 group.add(edgeLine2);
             }
         }
@@ -1172,6 +1175,9 @@ export class WorldManager {
             // Only generate road if it's in a city area
             const roadInfluence = getCityInfluence(roadCenterX, roadCenterZ);
             if (roadInfluence >= CONFIG.cityInfluenceThreshold * 0.9) {
+                const { height: roadSurface } = sampleTerrain(roadCenterX, roadCenterZ);
+                const roadBaseHeight = THREE.MathUtils.lerp(roadSurface, plateauHeight, 0.55);
+
                 // Create main road surface - positioned flush with base terrain
                 const roadGeo = new THREE.PlaneGeometry(CONFIG.chunkSize + blockSize, roadWidth);
                 const roadMat = new THREE.MeshLambertMaterial({
@@ -1180,7 +1186,7 @@ export class WorldManager {
                 });
                 const road = new THREE.Mesh(roadGeo, roadMat);
                 road.rotation.x = -Math.PI / 2;
-                road.position.set(roadCenterX, baseHeight + 0.005, roadCenterZ);
+                road.position.set(roadCenterX, roadBaseHeight + 0.005, roadCenterZ);
                 road.receiveShadow = true;
                 group.add(road);
 
@@ -1193,7 +1199,7 @@ export class WorldManager {
                     new THREE.MeshBasicMaterial({ color: 0xffff00 })
                 );
                 centerLine.rotation.x = -Math.PI / 2;
-                centerLine.position.set(roadCenterX, baseHeight + 0.01, roadCenterZ);
+                centerLine.position.set(roadCenterX, roadBaseHeight + 0.01, roadCenterZ);
                 group.add(centerLine);
 
                 // Add edge lines
@@ -1202,7 +1208,7 @@ export class WorldManager {
                     new THREE.MeshBasicMaterial({ color: 0xffffff })
                 );
                 edgeLine1.rotation.x = -Math.PI / 2;
-                edgeLine1.position.set(roadCenterX, baseHeight + 0.01, roadCenterZ - roadWidth / 2 + 0.5);
+                edgeLine1.position.set(roadCenterX, roadBaseHeight + 0.01, roadCenterZ - roadWidth / 2 + 0.5);
                 group.add(edgeLine1);
 
                 const edgeLine2 = new THREE.Mesh(
@@ -1210,7 +1216,7 @@ export class WorldManager {
                     new THREE.MeshBasicMaterial({ color: 0xffffff })
                 );
                 edgeLine2.rotation.x = -Math.PI / 2;
-                edgeLine2.position.set(roadCenterX, baseHeight + 0.01, roadCenterZ + roadWidth / 2 - 0.5);
+                edgeLine2.position.set(roadCenterX, roadBaseHeight + 0.01, roadCenterZ + roadWidth / 2 - 0.5);
                 group.add(edgeLine2);
             }
         }
@@ -1227,10 +1233,14 @@ export class WorldManager {
             npc.params.hairColor = '#' + hairHue.toString(16).padStart(6, '0');
             npc.params.jacketColor = '#' + jacketHue.toString(16).padStart(6, '0');
             npc.rebuild();
+            const npcX = ox + CONFIG.chunkSize / 2 + (npcRandom(3) - 0.5) * 40;
+            const npcZ = oz + CONFIG.chunkSize / 2 + (npcRandom(4) - 0.5) * 40;
+            const { height: npcSurface } = sampleTerrain(npcX, npcZ);
+            const npcBaseHeight = THREE.MathUtils.lerp(npcSurface, plateauHeight, 0.55);
             npc.group.position.set(
-                ox + CONFIG.chunkSize / 2 + (npcRandom(3) - 0.5) * 40,
-                baseHeight + sidewalkHeight,
-                oz + CONFIG.chunkSize / 2 + (npcRandom(4) - 0.5) * 40
+                npcX,
+                npcBaseHeight + sidewalkHeight,
+                npcZ
             );
             group.add(npc.group);
             this.npcs.push(npc);
