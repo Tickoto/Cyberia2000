@@ -38,6 +38,12 @@ function init() {
     renderer.domElement.style.imageRendering = 'pixelated';
     document.body.appendChild(renderer.domElement);
 
+    renderer.domElement.addEventListener('click', () => {
+        if (isGameActive && document.pointerLockElement !== document.body && !inventoryUI.isOpen) {
+            document.body.requestPointerLock();
+        }
+    });
+
     const hemi = new THREE.HemisphereLight(0xaabbcc, 0x444422, 0.6);
     scene.add(hemi);
 
