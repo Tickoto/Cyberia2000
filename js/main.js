@@ -151,7 +151,6 @@ function startGame() {
     const spawn = worldManager.findCitySpawnPoint();
     playerController.char.group.position.set(spawn.x, spawn.y, spawn.z);
     playerController.physicsBody.velocity.set(0, 0, 0);
-    vehicleManager.spawnStartingVehicles(spawn);
 
     isGameActive = true;
     document.body.requestPointerLock();
@@ -161,23 +160,29 @@ function startGame() {
     logChat('System', 'Press [I] to open inventory, [E] to interact with objects.');
     logChat('WarNet', 'ALERT: Combat detected in multiple sectors.');
 
-    // Initialize networking if enabled
+    // Initialize networking if enabled, otherwise spawn vehicles immediately
     if (CONFIG.networkEnabled) {
-        initializeNetworking(username);
+        initializeNetworking(username, spawn);
+    } else {
+        // Offline mode - spawn vehicles immediately
+        vehicleManager.spawnStartingVehicles(spawn);
     }
 
     gameLoop();
 }
 
-function initializeNetworking(username) {
-    // Set up entity handlers
+function initializeNetworking(username, spawnPoint) {
+    // Set up entity handlers BEFORE connecting
     setupNetworkEntityHandlers();
+
+    // Connect vehicle manager to network manager early so it can receive vehicle spawns
+    vehicleManager.setNetworkManager(networkManager);
 
     // Set up callbacks
     networkManager.onConnected = () => {
         logChat('System', 'Connected to multiplayer server!');
-        // Register local player
-        registerLocalPlayer(username);
+        // Register local player and handle vehicle spawning
+        registerLocalPlayer(username, spawnPoint);
     };
 
     networkManager.onDisconnected = () => {
@@ -328,7 +333,7 @@ function setupNetworkEntityHandlers() {
     });
 }
 
-function registerLocalPlayer(username) {
+function registerLocalPlayer(username, spawnPoint) {
     // Create and register local player entity
     localPlayerEntity = new NetworkPlayer();
     localPlayerEntity.syncProperties.username = username;
@@ -339,17 +344,19 @@ function registerLocalPlayer(username) {
     // Connect war manager to network for unit syncing
     warManager.setNetworkManager(networkManager);
 
-    // Connect vehicle manager to network for vehicle syncing
-    vehicleManager.setNetworkManager(networkManager);
-
-    // If we're the host, register existing vehicles with the network
+    // If we're the host, spawn and register vehicles
+    // Non-host clients will receive vehicles from the network
     if (networkManager.isHost) {
+        // Host spawns the authoritative vehicles
+        vehicleManager.spawnStartingVehicles(spawnPoint);
+        // Register all spawned vehicles with the network
         for (const vehicle of vehicleManager.vehicles) {
             if (!vehicle.networkId) {
                 vehicleManager.registerVehicleNetwork(vehicle);
             }
         }
     }
+    // Note: Non-host clients receive vehicles via entity_spawn messages from relay server
 
     // Broadcast player join
     networkManager.broadcast(MessageType.PLAYER_JOIN, {

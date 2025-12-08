@@ -32,7 +32,7 @@ export class VehicleManager {
     handleNetworkVehicleSpawn(data, clientId) {
         // Find matching local vehicle by networkId or spawn position
         let vehicle = this.vehicles.find(v => v.networkId === data.id);
-        if (!vehicle) {
+        if (!vehicle && data.position && data.vehicleType) {
             // Spawn new vehicle from network
             const pos = new THREE.Vector3(data.position.x, data.position.y, data.position.z);
             if (data.vehicleType === 'tank') {
@@ -45,7 +45,19 @@ export class VehicleManager {
             if (vehicle) {
                 vehicle.networkId = data.id;
                 vehicle.isRemote = true;
+                // Apply initial heading and tilt
+                if (data.heading !== undefined) {
+                    vehicle.heading = data.heading;
+                }
+                if (data.tiltX !== undefined) vehicle.tiltX = data.tiltX;
+                if (data.tiltZ !== undefined) vehicle.tiltZ = data.tiltZ;
+                if (data.targetAltitude !== undefined) vehicle.targetAltitude = data.targetAltitude;
+                console.log(`Spawned remote ${data.vehicleType} at`, pos);
             }
+        }
+        if (!vehicle) {
+            console.warn('Failed to spawn vehicle from network:', data);
+            return null;
         }
         const networkEntity = new NetworkVehicle(data.id);
         networkEntity.vehicleRef = vehicle;
@@ -95,7 +107,20 @@ export class VehicleManager {
 
         const networkEntity = new NetworkVehicle();
         networkEntity.vehicleRef = vehicle;
+
+        // Set all sync properties from the actual vehicle state
         networkEntity.syncProperties.vehicleType = vehicle.type;
+        networkEntity.syncProperties.x = vehicle.body.position.x;
+        networkEntity.syncProperties.y = vehicle.body.position.y;
+        networkEntity.syncProperties.z = vehicle.body.position.z;
+        networkEntity.syncProperties.heading = vehicle.heading;
+        networkEntity.syncProperties.rotationX = vehicle.tilt.x;
+        networkEntity.syncProperties.rotationY = vehicle.heading;
+        networkEntity.syncProperties.rotationZ = vehicle.tilt.z;
+        networkEntity.syncProperties.tiltX = vehicle.tiltX || 0;
+        networkEntity.syncProperties.tiltZ = vehicle.tiltZ || 0;
+        networkEntity.syncProperties.targetAltitude = vehicle.targetAltitude || 0;
+
         vehicle.networkId = networkEntity.networkId;
         vehicle.networkEntity = networkEntity;
         vehicle.isRemote = false;
@@ -688,10 +713,10 @@ export class VehicleManager {
             }
 
             // Visual tilt - use YXZ Euler order so pitch/roll are relative to helicopter's heading
-            // tiltX > 0 = nose pitches DOWN (forward lean when moving forward)
-            // tiltZ > 0 = roll right, so we negate for proper visual
-            const targetPitch = -vehicle.tiltX;  // Negative because +tiltX = forward = nose down
-            const targetRoll = -vehicle.tiltZ;
+            // tiltX > 0 = moving forward = nose pitches DOWN (positive X rotation)
+            // tiltZ > 0 = strafing right = roll right (positive Z rotation)
+            const targetPitch = vehicle.tiltX;  // Positive tiltX = forward = nose down
+            const targetRoll = vehicle.tiltZ;
             vehicle.tilt.x = THREE.MathUtils.lerp(vehicle.tilt.x, targetPitch, delta * 6);
             vehicle.tilt.z = THREE.MathUtils.lerp(vehicle.tilt.z, targetRoll, delta * 6);
             vehicle.mesh.rotation.set(vehicle.tilt.x, vehicle.heading, vehicle.tilt.z, 'YXZ');
