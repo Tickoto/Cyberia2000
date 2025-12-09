@@ -61,7 +61,7 @@ export class JoltPhysicsWorld {
         // Initialize Jolt WASM module
         this.Jolt = await initJolt();
 
-        // Setup collision filtering
+        // Setup collision filtering first (creates the filter objects)
         this.setupCollisionFiltering();
 
         // Create physics system settings
@@ -72,6 +72,11 @@ export class JoltPhysicsWorld {
         settings.mNumBodyMutexes = 0; // Auto-detect
         settings.mNumVelocitySteps = 10;
         settings.mNumPositionSteps = 2;
+
+        // Assign the collision filters to settings (required by WASM bindings)
+        settings.mObjectLayerPairFilter = this.objectFilter;
+        settings.mBroadPhaseLayerInterface = this.bpLayerInterface;
+        settings.mObjectVsBroadPhaseLayerFilter = this.objectVsBpFilter;
 
         // Create Jolt interface
         this.joltInterface = new this.Jolt.JoltInterface(settings);
