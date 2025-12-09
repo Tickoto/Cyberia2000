@@ -67,10 +67,25 @@ export class PlayerController {
     applyServerPhysicsState(state) {
         if (!state || !this.useServerPhysics) return;
 
-        // Apply position
+        // Apply position with smoothing to avoid jitter
         if (state.position) {
-            this.char.group.position.set(state.position.x, state.position.y, state.position.z);
-            this.physicsBody.position.set(state.position.x, state.position.y, state.position.z);
+            const targetPos = new THREE.Vector3(state.position.x, state.position.y, state.position.z);
+            const currentPos = this.char.group.position;
+
+            // Calculate distance to target
+            const dist = currentPos.distanceTo(targetPos);
+
+            // If too far off (teleport/spawn), snap directly
+            // Otherwise smoothly interpolate to reduce jitter
+            if (dist > 5) {
+                this.char.group.position.copy(targetPos);
+                this.physicsBody.position.copy(targetPos);
+            } else {
+                // Smooth lerp factor - higher = more responsive but more jittery
+                const lerpFactor = 0.3;
+                this.char.group.position.lerp(targetPos, lerpFactor);
+                this.physicsBody.position.lerp(targetPos, lerpFactor);
+            }
         }
 
         // Apply velocity for animations

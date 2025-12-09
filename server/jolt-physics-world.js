@@ -435,12 +435,13 @@ export class JoltPhysicsWorld {
         let vx = moveX * speed;
         let vz = moveZ * speed;
 
-        // Apply rotation
+        // Apply rotation (must match Three.js applyAxisAngle(Y, angle) which is counterclockwise)
         if (inputs.rotationY !== undefined) {
             const cos = Math.cos(inputs.rotationY);
             const sin = Math.sin(inputs.rotationY);
-            const rx = vx * cos - vz * sin;
-            const rz = vx * sin + vz * cos;
+            // Three.js Y-axis rotation: x' = x*cos + z*sin, z' = -x*sin + z*cos
+            const rx = vx * cos + vz * sin;
+            const rz = -vx * sin + vz * cos;
             vx = rx;
             vz = rz;
         }
