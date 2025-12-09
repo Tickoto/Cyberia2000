@@ -193,7 +193,10 @@ function initializeNetworking(username) {
     // Set up callbacks
     networkManager.onConnected = () => {
         logChat('System', 'Connected to multiplayer server!');
-        // Register local player
+    };
+
+    // Register player AFTER handshake completes (so serverPhysicsEnabled is set)
+    networkManager.onHandshakeComplete = () => {
         registerLocalPlayer(username);
     };
 
