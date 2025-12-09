@@ -324,6 +324,7 @@ export class NetworkManager {
         // Callbacks
         this.onConnected = null;
         this.onDisconnected = null;
+        this.onHandshakeComplete = null;  // Called after handshake response received
         this.onPlayerJoined = null;
         this.onPlayerLeft = null;
         this.onChatMessage = null;
@@ -488,6 +489,9 @@ export class NetworkManager {
                     'tick rate:', this.physicsTickRate, 'broadcast rate:', this.networkBroadcastRate);
             }
             console.log('Network: Handshake complete, isHost:', this.isHost);
+
+            // Call handshake complete callback (after serverPhysicsEnabled is set)
+            if (this.onHandshakeComplete) this.onHandshakeComplete(data);
         });
 
         // Ping/Pong
