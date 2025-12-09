@@ -9,9 +9,11 @@ import { CONFIG } from './config.js';
 import { networkManager, NetworkPlayer, NetworkEntityType, MessageType } from './network-manager.js';
 import { Character } from './character.js';
 import { VehicleManager } from './vehicle-manager.js';
+import { PhysicsNetworkClient } from './physics-network-client.js';
 
 let scene, camera, renderer, clock;
 let playerController, worldManager, warManager, physics, environment, vehicleManager;
+let physicsNetworkClient = null;
 let isGameActive = false;
 let previewChar;
 const keys = {};
@@ -20,6 +22,7 @@ const mouse = { x: 0, y: 0 };
 // Remote players
 const remotePlayers = new Map(); // networkId -> { character, networkEntity }
 let localPlayerEntity = null;
+let localPlayerEntityId = null;
 
 function init() {
     scene = new THREE.Scene();
@@ -179,6 +182,14 @@ function initializeNetworking(username) {
     // Set up entity handlers
     setupNetworkEntityHandlers();
 
+    // Initialize physics network client
+    physicsNetworkClient = new PhysicsNetworkClient(networkManager);
+    physicsNetworkClient.initialize();
+
+    // Connect physics client to player controller and vehicle manager
+    playerController.setPhysicsNetworkClient(physicsNetworkClient);
+    vehicleManager.setPhysicsNetworkClient(physicsNetworkClient);
+
     // Set up callbacks
     networkManager.onConnected = () => {
         logChat('System', 'Connected to multiplayer server!');
@@ -188,6 +199,16 @@ function initializeNetworking(username) {
 
     networkManager.onDisconnected = () => {
         logChat('System', 'Disconnected from multiplayer server.');
+
+        // Disable server physics mode
+        playerController.setServerPhysicsMode(false);
+        vehicleManager.setServerPhysicsMode(false);
+
+        // Clean up physics client
+        if (physicsNetworkClient) {
+            physicsNetworkClient.clear();
+        }
+
         // Clean up remote players
         for (const [id, data] of remotePlayers) {
             scene.remove(data.character.group);
@@ -217,6 +238,11 @@ function initializeNetworking(username) {
         }
     });
 
+    // Handle physics state updates from server
+    networkManager.registerMessageHandler(MessageType.PHYSICS_STATE, (data, clientId, timestamp) => {
+        handlePhysicsStateUpdate(data, timestamp);
+    });
+
     // Try to connect
     networkManager.connect(CONFIG.networkServerUrl)
         .then(() => {
@@ -226,6 +252,42 @@ function initializeNetworking(username) {
             logChat('System', 'Multiplayer: Running in offline mode.');
             console.log('Network connection failed:', error);
         });
+}
+
+function handlePhysicsStateUpdate(data, timestamp) {
+    if (!data.bodies || !Array.isArray(data.bodies)) return;
+
+    for (const bodyState of data.bodies) {
+        const entityId = bodyState.entityId;
+        if (!entityId) continue;
+
+        // Update local player from server physics
+        if (entityId === localPlayerEntityId) {
+            playerController.applyServerPhysicsState(bodyState);
+            continue;
+        }
+
+        // Update remote players
+        const remotePlayer = remotePlayers.get(entityId);
+        if (remotePlayer) {
+            if (bodyState.position) {
+                remotePlayer.character.group.position.set(
+                    bodyState.position.x,
+                    bodyState.position.y,
+                    bodyState.position.z
+                );
+            }
+            if (bodyState.velocity) {
+                const speed = Math.sqrt(
+                    bodyState.velocity.x * bodyState.velocity.x +
+                    bodyState.velocity.z * bodyState.velocity.z
+                );
+                remotePlayer.character.animate(speed);
+            }
+        }
+
+        // Vehicles are handled by vehicle manager via physicsNetworkClient callback
+    }
 }
 
 function setupNetworkEntityHandlers() {
@@ -348,15 +410,48 @@ function registerLocalPlayer(username) {
     // Connect vehicle manager to network for vehicle syncing
     vehicleManager.setNetworkManager(networkManager);
 
-    // If we're the host, spawn and register vehicles
-    // Non-host clients will receive vehicle spawn events from the server
-    if (networkManager.isHost) {
-        // Use player's current position as spawn origin for vehicles
-        const spawnOrigin = playerController.char.group.position.clone();
-        vehicleManager.spawnStartingVehicles(spawnOrigin, true);
-        logChat('System', 'Vehicles spawned and synced to network.');
+    // Check if server has physics enabled
+    if (networkManager.serverPhysicsEnabled) {
+        logChat('System', 'Server physics enabled - using server-authoritative simulation.');
+
+        // Enable server physics mode
+        playerController.setServerPhysicsMode(true);
+        vehicleManager.setServerPhysicsMode(true);
+
+        if (physicsNetworkClient) {
+            physicsNetworkClient.setServerPhysicsEnabled(
+                true,
+                networkManager.physicsTickRate,
+                networkManager.networkBroadcastRate
+            );
+        }
+
+        // Send spawn_player request to server
+        const spawnPos = playerController.char.group.position;
+        localPlayerEntityId = `player-${networkManager.clientId}`;
+        playerController.setEntityId(localPlayerEntityId);
+
+        networkManager.send(MessageType.SPAWN_PLAYER, {
+            position: { x: spawnPos.x, y: spawnPos.y, z: spawnPos.z },
+            username: username,
+            appearance: playerController.char.params
+        });
+
+        // Vehicles are spawned and managed by server in server physics mode
+        logChat('System', 'Vehicles managed by server physics.');
     } else {
-        logChat('System', 'Waiting for vehicle sync from host...');
+        // Legacy mode: client-side physics
+        logChat('System', 'Using client-side physics (legacy mode).');
+
+        // If we're the host, spawn and register vehicles
+        // Non-host clients will receive vehicle spawn events from the server
+        if (networkManager.isHost) {
+            const spawnOrigin = playerController.char.group.position.clone();
+            vehicleManager.spawnStartingVehicles(spawnOrigin, true);
+            logChat('System', 'Vehicles spawned and synced to network.');
+        } else {
+            logChat('System', 'Waiting for vehicle sync from host...');
+        }
     }
 
     // Broadcast player join
@@ -369,6 +464,24 @@ function registerLocalPlayer(username) {
 function updateNetworkPlayerState() {
     if (!localPlayerEntity || !networkManager.isConnected) return;
 
+    // In server physics mode, player input is sent via physicsNetworkClient
+    // We only need to send legacy updates for non-physics state (animation hints)
+    if (networkManager.serverPhysicsEnabled) {
+        // Server handles position, we just need to sync visual state for animations
+        const rot = playerController.char.group.rotation.y;
+        const vel = playerController.physicsBody.velocity;
+        const animSpeed = Math.sqrt(vel.x * vel.x + vel.z * vel.z);
+
+        // Send minimal visual state for remote players to animate
+        networkManager.queueEntityUpdate(localPlayerEntity.networkId, {
+            type: NetworkEntityType.PLAYER,
+            rotationY: rot,
+            animationSpeed: animSpeed
+        });
+        return;
+    }
+
+    // Legacy mode: send full position updates
     const pos = playerController.char.group.position;
     const rot = playerController.char.group.rotation.y;
     const vel = playerController.physicsBody.velocity;
@@ -400,6 +513,11 @@ function gameLoop() {
         if (CONFIG.networkEnabled && networkManager.isConnected) {
             updateNetworkPlayerState();
             networkManager.update(delta);
+
+            // Update physics network client (for interpolation and input sending)
+            if (physicsNetworkClient && networkManager.serverPhysicsEnabled) {
+                physicsNetworkClient.update(delta);
+            }
         }
     }
 

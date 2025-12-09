@@ -1,6 +1,7 @@
 import { getTerrainHeight } from './terrain.js';
-import { NetworkEntityType, NetworkVehicle } from './network-manager.js';
-import { CONFIG } from './config.js'; //
+import { NetworkEntityType, NetworkVehicle, MessageType } from './network-manager.js';
+import { CONFIG } from './config.js';
+import { quaternionToEuler } from './physics-network-client.js';
 
 export class VehicleManager {
     constructor(scene, physics) {
@@ -11,11 +12,16 @@ export class VehicleManager {
         this.bombs = [];
         this.raycaster = new THREE.Raycaster();
         this.networkManager = null;
-        this.vehicleSyncInterval = 0.05; 
+        this.physicsNetworkClient = null;
+        this.vehicleSyncInterval = 0.05;
         this.lastSyncTime = 0;
-        
+
         // Use configured gravity
         this.GRAVITY = CONFIG.gravity || 9.81;
+
+        // Server physics mode
+        this.useServerPhysics = false;
+        this.vehicleIdMap = new Map(); // entityId -> vehicle
     }
 
     setNetworkManager(networkManager) {
@@ -23,6 +29,58 @@ export class VehicleManager {
         if (networkManager) {
             this.setupNetworkHandlers();
         }
+    }
+
+    setPhysicsNetworkClient(physicsNetworkClient) {
+        this.physicsNetworkClient = physicsNetworkClient;
+        if (physicsNetworkClient) {
+            // Register callback for physics state updates
+            physicsNetworkClient.onEntityStateUpdate = (entityId, state) => {
+                this.handleServerPhysicsUpdate(entityId, state);
+            };
+        }
+    }
+
+    setServerPhysicsMode(enabled) {
+        this.useServerPhysics = enabled;
+        console.log('VehicleManager: Server physics mode:', enabled);
+    }
+
+    handleServerPhysicsUpdate(entityId, state) {
+        const vehicle = this.vehicleIdMap.get(entityId);
+        if (!vehicle || !state) return;
+
+        // Don't update vehicles we're controlling locally
+        if (!vehicle.isRemote && !this.useServerPhysics) return;
+
+        // Apply interpolated physics state
+        if (state.position) {
+            vehicle.body.position.set(state.position.x, state.position.y, state.position.z);
+        }
+
+        if (state.rotation) {
+            // Convert quaternion to Euler for Three.js
+            const euler = quaternionToEuler(state.rotation);
+            vehicle.body.rotation.set(euler.x, euler.y, euler.z, 'YXZ');
+            vehicle.tilt.set(euler.x, euler.y, euler.z, 'YXZ');
+            vehicle.heading = euler.y;
+        }
+
+        if (state.velocity) {
+            vehicle.body.velocity.set(state.velocity.x, state.velocity.y, state.velocity.z);
+        }
+
+        if (state.angularVelocity) {
+            vehicle.body.angularVelocity.set(
+                state.angularVelocity.x,
+                state.angularVelocity.y,
+                state.angularVelocity.z
+            );
+        }
+
+        // Update mesh position/rotation
+        vehicle.mesh.position.copy(vehicle.body.position);
+        vehicle.mesh.rotation.copy(vehicle.tilt);
     }
 
     setupNetworkHandlers() {
@@ -46,11 +104,16 @@ export class VehicleManager {
             }
             if (vehicle) {
                 vehicle.networkId = data.id;
-                if (this.networkManager.isHost && data.ownerId === 'server') {
+                // In server physics mode, all vehicles are driven by server
+                if (this.useServerPhysics) {
+                    vehicle.isRemote = true;
+                } else if (this.networkManager.isHost && data.ownerId === 'server') {
                     vehicle.isRemote = false;
                 } else {
                     vehicle.isRemote = true;
                 }
+                // Register in ID map for physics updates
+                this.vehicleIdMap.set(data.id, vehicle);
             }
         }
         const networkEntity = new NetworkVehicle(data.id);
@@ -378,13 +441,26 @@ export class VehicleManager {
         const shouldSync = this.lastSyncTime >= this.vehicleSyncInterval;
 
         for (const vehicle of this.vehicles) {
-            if (!vehicle.isRemote) {
+            // In server physics mode, skip local physics simulation
+            // Server sends authoritative state via PHYSICS_STATE messages
+            if (this.useServerPhysics) {
+                // Just update visual elements (rotor animation)
+                if (vehicle.type === 'helicopter' && vehicle.rotor) {
+                    vehicle.rotor.rotation.y += delta * 15;
+                }
+
+                // Send vehicle inputs to server if player is controlling
+                if (vehicle.playerControlled && shouldSync) {
+                    this.sendVehicleInputToServer(vehicle);
+                }
+            } else if (!vehicle.isRemote) {
+                // Local physics simulation (fallback when server physics disabled)
                 if (vehicle.type === 'tank' || vehicle.type === 'jeep') {
                     this.updateGroundVehicle(vehicle, delta);
                 } else if (vehicle.type === 'helicopter') {
                     this.updateHelicopter(vehicle, delta);
                 }
-                
+
                 // Chassis Collision (Scraping/Tumbling)
                 this.updateChassisCollision(vehicle, delta);
 
@@ -392,24 +468,61 @@ export class VehicleManager {
                 vehicle.mesh.rotation.copy(vehicle.body.rotation);
                 vehicle.heading = vehicle.body.rotation.y;
                 vehicle.tilt.copy(vehicle.body.rotation);
+
+                // Sync state to other clients (legacy mode)
+                if (shouldSync && vehicle.networkId) {
+                    this.syncVehicleState(vehicle);
+                }
             } else {
+                // Remote vehicle (non-server physics mode)
                 if (vehicle.type === 'helicopter' && vehicle.rotor) {
                     vehicle.rotor.rotation.y += delta * 15;
                 }
             }
 
+            // Update weapon cooldowns
             vehicle.weaponCooldown = Math.max(0, vehicle.weaponCooldown - delta);
             vehicle.mgCooldown = Math.max(0, vehicle.mgCooldown - delta);
             vehicle.bombCooldown = Math.max(0, vehicle.bombCooldown - delta);
-
-            if (shouldSync && !vehicle.isRemote && vehicle.networkId) {
-                this.syncVehicleState(vehicle);
-            }
         }
 
         if (shouldSync) this.lastSyncTime = 0;
         this.updateProjectiles(delta);
         this.updateBombs(delta);
+    }
+
+    sendVehicleInputToServer(vehicle) {
+        if (!this.physicsNetworkClient || !vehicle.networkId) return;
+
+        const inputs = vehicle.inputs || {};
+
+        if (vehicle.type === 'helicopter') {
+            this.physicsNetworkClient.sendVehicleInput(vehicle.networkId, {
+                lift: inputs.lift || 0,
+                pitch: inputs.pitch || 0,
+                roll: inputs.roll || 0,
+                yaw: inputs.yaw || 0
+            });
+        } else {
+            this.physicsNetworkClient.sendVehicleInput(vehicle.networkId, {
+                throttle: inputs.throttle || 0,
+                steer: inputs.steer || 0,
+                brake: inputs.brake || false
+            });
+        }
+    }
+
+    markVehiclePlayerControlled(vehicle, controlled) {
+        if (vehicle) {
+            vehicle.playerControlled = controlled;
+            // When in server physics mode, register as local entity if controlled
+            if (this.physicsNetworkClient && vehicle.networkId) {
+                if (controlled) {
+                    // We're controlling this vehicle - don't interpolate from server
+                    // (actually we still want server state, just send inputs)
+                }
+            }
+        }
     }
 
     // MULTI-POINT CHASSIS COLLISION
