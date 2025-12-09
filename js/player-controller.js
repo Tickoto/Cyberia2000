@@ -290,109 +290,75 @@ export class PlayerController {
         this.currentSeat = seat;
         this.seatRole = seat.role;
         this.char.group.visible = false;
+        
+        // Disable player physics so they don't fight the car
         this.physicsBody.velocity.set(0, 0, 0);
         this.physicsBody.noCollisions = true;
         this.physicsBody.noGravity = true;
+
+        // Initialize inputs on vehicle if missing
+        if (!vehicle.inputs) {
+            vehicle.inputs = { throttle: 0, steer: 0, brake: false, pitch: 0, roll: 0, yaw: 0, lift: 0 };
+        }
     }
 
     updateVehicleControl(delta) {
         if (!this.currentVehicle) return;
         const vehicle = this.currentVehicle;
-        if (vehicle.type === 'tank' || vehicle.type === 'jeep') {
-            const accel = vehicle.type === 'tank' ? 38 : 48;
-            const turnRate = vehicle.type === 'tank' ? 1.5 : 2.2;
-            const maxSpeed = vehicle.type === 'tank' ? 32 : 42;
 
-            // Forward/backward acceleration
-            if (this.keys['KeyW']) {
-                vehicle.body.velocity.x += Math.sin(vehicle.heading) * accel * delta;
-                vehicle.body.velocity.z += Math.cos(vehicle.heading) * accel * delta;
+        // Reset inputs
+        vehicle.inputs = { throttle: 0, steer: 0, brake: false, pitch: 0, roll: 0, yaw: 0, lift: 0 };
 
-                // Add forward pitch when accelerating
-                if (vehicle.body.angularVelocity) {
-                    vehicle.body.angularVelocity.x += 0.3 * delta;
-                }
-            }
-            if (this.keys['KeyS']) {
-                vehicle.body.velocity.x -= Math.sin(vehicle.heading) * accel * 0.7 * delta;
-                vehicle.body.velocity.z -= Math.cos(vehicle.heading) * accel * 0.7 * delta;
+        if (this.seatRole === 'driver') {
+            // Ground Vehicle Control
+            if (this.keys['KeyW']) vehicle.inputs.throttle = 1;
+            if (this.keys['KeyS']) vehicle.inputs.throttle = -1;
+            if (this.keys['KeyA']) vehicle.inputs.steer = 1; // Left
+            if (this.keys['KeyD']) vehicle.inputs.steer = -1; // Right
+            if (this.keys['Space']) vehicle.inputs.brake = true;
 
-                // Add backward pitch when braking
-                if (vehicle.body.angularVelocity) {
-                    vehicle.body.angularVelocity.x -= 0.2 * delta;
-                }
-            }
+        } else if (this.seatRole === 'pilot') {
+            // Helicopter Control
+            // Pitch (W/S) - forward/back
+            if (this.keys['KeyW']) vehicle.inputs.pitch = 1;
+            if (this.keys['KeyS']) vehicle.inputs.pitch = -1;
+            
+            // Roll (A/D) - left/right strafe
+            if (this.keys['KeyA']) vehicle.inputs.roll = -1;
+            if (this.keys['KeyD']) vehicle.inputs.roll = 1;
 
-            // Turning - apply angular velocity for yaw
-            const speed = Math.hypot(vehicle.body.velocity.x, vehicle.body.velocity.z);
-            const turnMultiplier = Math.min(1, speed / 10); // Need some speed to turn effectively
-
-            if (this.keys['KeyA']) {
-                vehicle.heading += turnRate * turnMultiplier * delta;
-                // Apply roll when turning
-                if (vehicle.body.angularVelocity && speed > 5) {
-                    vehicle.body.angularVelocity.z -= 0.4 * turnMultiplier * delta;
-                }
-            }
-            if (this.keys['KeyD']) {
-                vehicle.heading -= turnRate * turnMultiplier * delta;
-                // Apply roll when turning
-                if (vehicle.body.angularVelocity && speed > 5) {
-                    vehicle.body.angularVelocity.z += 0.4 * turnMultiplier * delta;
-                }
-            }
-
-            // Apply handbrake with Space - spin out!
-            if (this.keys['Space'] && speed > 8) {
-                // Reduce friction and add spin
-                vehicle.body.velocity.x *= 0.98;
-                vehicle.body.velocity.z *= 0.98;
-                if (this.keys['KeyA']) {
-                    vehicle.body.angularVelocity.y += 2.0 * delta;
-                    vehicle.body.angularVelocity.z -= 1.5 * delta;
-                }
-                if (this.keys['KeyD']) {
-                    vehicle.body.angularVelocity.y -= 2.0 * delta;
-                    vehicle.body.angularVelocity.z += 1.5 * delta;
-                }
-            }
-
-            // Speed limit
-            if (speed > maxSpeed) {
-                const scale = maxSpeed / speed;
-                vehicle.body.velocity.x *= scale;
-                vehicle.body.velocity.z *= scale;
-            }
-
-            // Stabilize Y velocity when grounded
-            if (vehicle.body.grounded && Math.abs(vehicle.body.velocity.y) < 0.5) {
-                vehicle.body.velocity.y *= 0.8;
-            }
-        } else if (vehicle.type === 'helicopter') {
-            // Altitude control (collective)
-            if (this.keys['Space']) vehicle.targetAltitude += 12 * delta;
-            if (this.keys['ShiftLeft']) vehicle.targetAltitude -= 12 * delta;
-            vehicle.targetAltitude = Math.max(vehicle.targetAltitude, getTerrainHeight(vehicle.body.position.x, vehicle.body.position.z) + 1.6);
-
-            // Calculate control inputs (normalized -1 to 1)
-            const pitchInput = this.keys['KeyW'] ? 1.0 : this.keys['KeyS'] ? -0.6 : 0;
-            const rollInput = this.keys['KeyA'] ? -1.0 : this.keys['KeyD'] ? 1.0 : 0;
-
-            // Yaw control (A/D also turns the helicopter)
-            const yawRate = 1.8;
-            if (this.keys['KeyA']) vehicle.heading += yawRate * delta;
-            if (this.keys['KeyD']) vehicle.heading -= yawRate * delta;
-
-            // Set tilt values - vehicle-manager will handle physics
-            // Positive tiltX = pitch forward (nose down), negative = pitch back
-            vehicle.tiltX = THREE.MathUtils.lerp(vehicle.tiltX, pitchInput * 0.5, delta * 4);
-            vehicle.tiltZ = THREE.MathUtils.lerp(vehicle.tiltZ, rollInput * 0.4, delta * 4);
-
-            // Set lift for altitude control
-            vehicle.lift = this.keys['Space'] ? 1 : this.keys['ShiftLeft'] ? -1 : 0;
+            // Lift (Space/Shift)
+            if (this.keys['Space']) vehicle.inputs.lift = 1;
+            if (this.keys['ShiftLeft']) vehicle.inputs.lift = -1;
+            
+            // Yaw (Q/E) - Turn tail
+            if (this.keys['KeyQ']) vehicle.inputs.yaw = 1;
+            if (this.keys['KeyE']) vehicle.inputs.yaw = -1;
         }
 
-        this.char.group.position.copy(this.currentSeat.offset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading).add(vehicle.mesh.position));
+        // Camera Logic follow vehicle
+        // Use physics rotation (Mesh follows physics body in VehicleManager)
+        const seatOffset = this.currentSeat.offset.clone().applyEuler(vehicle.mesh.rotation);
+        const anchor = vehicle.mesh.position.clone().add(seatOffset);
+        
+        // Smooth camera follow
+        const camDist = 10;
+        const camHeight = 4.5;
+        
+        // Calculate camera position relative to vehicle's heading
+        const vehicleYaw = vehicle.heading || 0;
+        
+        const desired = anchor.clone().add(new THREE.Vector3(
+            -Math.sin(vehicleYaw + this.pitch) * camDist,
+            camHeight + Math.sin(this.pitch) * 2,
+            -Math.cos(vehicleYaw + this.pitch) * camDist
+        ));
+        
+        this.camera.position.lerp(desired, 0.2); // Faster lerp for responsive feel
+        this.camera.lookAt(anchor.clone().add(new THREE.Vector3(0, 1, 0))); // Look slightly above anchor
+        
+        // Sync player position to seat for network
+        this.char.group.position.copy(anchor);
     }
 
     updateCamera() {
@@ -409,25 +375,13 @@ export class PlayerController {
             );
             this.camera.position.lerp(desiredPos, CONFIG.cameraLag);
             this.camera.lookAt(pos.x, pos.y + 1.5, pos.z);
-            return;
         }
-
-        const vehicle = this.currentVehicle;
-        const seatOffset = this.currentSeat.offset.clone().applyAxisAngle(new THREE.Vector3(0, 1, 0), vehicle.heading);
-        const anchor = vehicle.mesh.position.clone().add(seatOffset);
-        const camDist = 10;
-        const camHeight = 4.5;
-        const desired = anchor.clone().add(new THREE.Vector3(
-            -Math.sin(vehicle.heading + this.pitch) * camDist,
-            camHeight,
-            -Math.cos(vehicle.heading + this.pitch) * camDist
-        ));
-        this.camera.position.lerp(desired, 0.15);
-        this.camera.lookAt(anchor);
     }
 
     handleFire(button) {
         if (!this.currentVehicle || !this.vehicleManager) return;
+        
+        // Only allow firing if we have a valid role
         if (this.currentVehicle.type === 'tank') {
             if (button === 0 && this.seatRole === 'driver') {
                 this.vehicleManager.fireWeapon(this.currentVehicle, 'driver');

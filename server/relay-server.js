@@ -19,6 +19,13 @@ const clientInfo = new Map(); // client -> { clientId, username }
 const playerEntities = new Map(); // clientId -> last entity spawn/update data
 const vehicleEntities = new Map(); // roomId -> Map(entityId -> entity data)
 
+// Default vehicles to spawn in every room automatically
+const SERVER_VEHICLES = [
+    { type: 'vehicle', vehicleType: 'tank', position: { x: 12, y: 10, z: 8 }, rotation: { x: 0, y: 0, z: 0 } },
+    { type: 'vehicle', vehicleType: 'helicopter', position: { x: -15, y: 10, z: 12 }, rotation: { x: 0, y: 0, z: 0 } },
+    { type: 'vehicle', vehicleType: 'jeep', position: { x: 8, y: 10, z: -14 }, rotation: { x: 0, y: 0, z: 0 } }
+];
+
 // Create WebSocket server
 const wss = new WebSocket.Server({ port: PORT });
 
@@ -61,6 +68,18 @@ function handleMessage(client, message) {
         case 'ping':
             // Respond with pong
             send(client, 'pong', { pingTime: timestamp });
+            break;
+
+        case 'chat_message':
+            // Intercept commands starting with /
+            if (data.message && data.message.startsWith('/')) {
+                handleCommand(client, data.message, clientId);
+            } else {
+                // Otherwise broadcast normally
+                if (data.broadcast) {
+                    broadcastToRoom(client, message);
+                }
+            }
             break;
 
         case 'entity_spawn':
@@ -137,6 +156,112 @@ function handleMessage(client, message) {
     }
 }
 
+function handleCommand(client, message, clientId) {
+    const args = message.split(' ');
+    const command = args[0].toLowerCase();
+
+    if (command === '/spawnvehicle') {
+        const type = args[1] ? args[1].toLowerCase() : 'jeep';
+        const validTypes = ['tank', 'helicopter', 'jeep'];
+        
+        if (validTypes.includes(type)) {
+            spawnVehicleForPlayer(client, clientId, type);
+        } else {
+            send(client, 'chat_message', {
+                username: 'System',
+                message: 'Invalid vehicle type. Use: tank, helicopter, or jeep.'
+            });
+        }
+    }
+}
+
+function spawnVehicleForPlayer(client, clientId, type) {
+    const player = playerEntities.get(clientId);
+    if (!player || !player.position) {
+        send(client, 'chat_message', { username: 'System', message: 'Error: Could not determine your position.' });
+        return;
+    }
+
+    const roomId = clientRooms.get(client);
+    if (!roomId) return;
+
+    // Calculate spawn position approx 10 units in front of player
+    // Assuming rotationY 0 is -Z (Forward)
+    const dist = 10;
+    const rot = player.rotationY || 0;
+    // Standard Three.js: forward is -Z. 
+    // rotated vector (0,0,-1) by rot Y: x = -sin(rot), z = -cos(rot)
+    const x = player.position.x - Math.sin(rot) * dist;
+    const z = player.position.z - Math.cos(rot) * dist;
+    const y = player.position.y + 5; // Drop from air to avoid getting stuck in ground
+
+    const id = `cmd-vehicle-${Date.now()}-${Math.floor(Math.random()*1000)}`;
+    
+    const vehicleData = {
+        id,
+        type: 'vehicle',
+        ownerId: 'server', // Server owned
+        vehicleType: type,
+        position: { x, y, z },
+        rotation: { x: 0, y: rot, z: 0 },
+        velocity: { x: 0, y: 0, z: 0 },
+        heading: rot,
+        tiltX: 0,
+        tiltZ: 0
+    };
+
+    // Store in server memory
+    if (!vehicleEntities.has(roomId)) vehicleEntities.set(roomId, new Map());
+    vehicleEntities.get(roomId).set(id, vehicleData);
+
+    // Broadcast to ALL clients in room (including spawner)
+    const spawnMsg = JSON.stringify({
+        type: 'entity_spawn',
+        data: vehicleData,
+        clientId: 'server',
+        timestamp: Date.now()
+    });
+
+    const room = rooms.get(roomId);
+    if (room) {
+        for (const c of room) {
+            if (c.readyState === WebSocket.OPEN) c.send(spawnMsg);
+        }
+    }
+
+    // Confirmation
+    send(client, 'chat_message', {
+        username: 'System',
+        message: `Spawned ${type} at ${Math.round(x)}, ${Math.round(z)}`
+    });
+}
+
+function initializeRoomVehicles(roomId) {
+    if (!vehicleEntities.has(roomId)) {
+        vehicleEntities.set(roomId, new Map());
+    }
+    const roomVehicles = vehicleEntities.get(roomId);
+    
+    SERVER_VEHICLES.forEach((def, index) => {
+        const id = `server-vehicle-${Date.now()}-${index}`;
+        const vehicleData = {
+            id,
+            type: 'vehicle',
+            ownerId: 'server',
+            vehicleType: def.vehicleType,
+            position: def.position,
+            rotation: def.rotation,
+            velocity: { x: 0, y: 0, z: 0 },
+            heading: 0,
+            tiltX: 0, 
+            tiltZ: 0
+        };
+        roomVehicles.set(id, vehicleData);
+    });
+    
+    console.log(`Initialized ${SERVER_VEHICLES.length} server vehicles for room ${roomId}`);
+}
+
 function handleHandshake(client, data, clientId) {
     const roomId = data.roomId || 'default';
 
@@ -150,6 +275,8 @@ function handleHandshake(client, data, clientId) {
     // Add to room
     if (!rooms.has(roomId)) {
         rooms.set(roomId, new Set());
+        // Initialize default server vehicles when room is created
+        initializeRoomVehicles(roomId);
     }
     rooms.get(roomId).add(client);
     clientRooms.set(client, roomId);
@@ -166,7 +293,6 @@ function handleHandshake(client, data, clientId) {
     });
 
     // Send existing players to the new client
-    // This allows new players to see players who connected before them
     const room = rooms.get(roomId);
     for (const otherClient of room) {
         if (otherClient !== client && otherClient.readyState === WebSocket.OPEN) {
@@ -175,7 +301,6 @@ function handleHandshake(client, data, clientId) {
                 // Send existing player's entity data if available
                 const entityData = playerEntities.get(otherInfo.clientId);
                 if (entityData) {
-                    // Send entity spawn message for existing player
                     const spawnMessage = JSON.stringify({
                         type: 'entity_spawn',
                         data: entityData,
@@ -184,7 +309,6 @@ function handleHandshake(client, data, clientId) {
                     });
                     client.send(spawnMessage);
                 } else {
-                    // No entity data yet, send player_join so client knows they exist
                     const joinMessage = JSON.stringify({
                         type: 'player_join',
                         data: {
@@ -200,14 +324,14 @@ function handleHandshake(client, data, clientId) {
         }
     }
 
-    // Send existing vehicles to the new client
+    // Send existing vehicles to the new client (including server vehicles)
     if (vehicleEntities.has(roomId)) {
         const roomVehicles = vehicleEntities.get(roomId);
         for (const [entityId, entityData] of roomVehicles) {
             const spawnMessage = JSON.stringify({
                 type: 'entity_spawn',
                 data: entityData,
-                clientId: entityData.ownerId,
+                clientId: entityData.ownerId, 
                 timestamp: Date.now()
             });
             client.send(spawnMessage);
@@ -237,7 +361,6 @@ function handleDisconnect(client) {
 
         // Notify others in room
         if (info) {
-            // Send entity_destroy so other clients remove the player
             broadcastToRoom(client, {
                 type: 'entity_destroy',
                 data: {
@@ -258,14 +381,12 @@ function handleDisconnect(client) {
                 timestamp: Date.now()
             });
 
-            // Clean up player entity data
             playerEntities.delete(info.clientId);
         }
 
         // Clean up empty rooms
         if (rooms.get(roomId).size === 0) {
             rooms.delete(roomId);
-            // Also clean up vehicle entities for this room
             vehicleEntities.delete(roomId);
             console.log(`Room ${roomId} closed (empty)`);
         }

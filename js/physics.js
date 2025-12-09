@@ -23,7 +23,7 @@ export class PhysicsSystem {
             mass: 1,
             position: new THREE.Vector3(),
             velocity: new THREE.Vector3(),
-            angularVelocity: new THREE.Vector3(), // For rotation (tumbling)
+            angularVelocity: new THREE.Vector3(), 
             rotation: new THREE.Euler(0, 0, 0, 'YXZ'),
             radius: 0.5,
             height: 1.6,
@@ -31,19 +31,18 @@ export class PhysicsSystem {
             bounciness: 0.05,
             friction: CONFIG.groundFriction,
             damping: CONFIG.airDrag,
-            angularDamping: 0.95, // How quickly rotation slows down
+            angularDamping: 0.5,
             slopeLimit: CONFIG.slopeLimit,
             groundNormal: new THREE.Vector3(0, 1, 0),
             noCollisions: false,
             noGravity: false,
-            enableAngularPhysics: false // Enable for vehicles
+            enableAngularPhysics: false 
         };
         const merged = Object.assign(defaults, body);
         this.bodies.add(merged);
         return merged;
     }
 
-    // Register a single mesh as a collider
     register(mesh) {
         if (!mesh || !mesh.isMesh) return false;
         if (mesh.userData && mesh.userData.noCollision) return false;
@@ -53,7 +52,6 @@ export class PhysicsSystem {
         const size = new THREE.Vector3();
         box.getSize(size);
 
-        // Ignore tiny geometry (decals, particles) but keep large ground planes
         const minSize = Math.min(size.x, size.y, size.z);
         const isLargeSurface = minSize < 0.05 && (size.x > 2 || size.z > 2);
         if (minSize < 0.05 && !isLargeSurface) return false;
@@ -85,27 +83,21 @@ export class PhysicsSystem {
         root.traverse(obj => this.unregister(obj));
     }
 
-    // Chunk-based API for WorldManager compatibility
     addChunkColliders(key, colliders) {
         if (!colliders || colliders.length === 0) return;
-
         const entry = this.chunkColliders.get(key) || { boxes: [], meshes: [], grounds: [] };
-
         colliders.forEach(collider => {
             if (!collider) return;
-
             if (collider instanceof THREE.Box3) {
                 entry.boxes.push(collider.clone());
                 return;
             }
-
             if (collider.isObject3D || collider.isMesh) {
                 if (this.register(collider)) {
                     entry.meshes.push(collider);
                 }
             }
         });
-
         if (entry.boxes.length || entry.meshes.length) {
             this.chunkColliders.set(key, entry);
         }
@@ -116,7 +108,6 @@ export class PhysicsSystem {
         const entry = this.chunkColliders.get(key) || { boxes: [], meshes: [], grounds: [] };
         root.traverse(obj => {
             if (this.register(obj)) {
-                // Ground meshes are for raycasting only, not Box3 collision
                 if (obj.userData && obj.userData.isGround) {
                     entry.grounds.push(obj);
                 } else {
@@ -124,7 +115,6 @@ export class PhysicsSystem {
                 }
             }
         });
-
         if (entry.boxes.length || entry.meshes.length || entry.grounds.length) {
             this.chunkColliders.set(key, entry);
         }
@@ -132,16 +122,8 @@ export class PhysicsSystem {
 
     removeChunkColliders(key) {
         const entry = this.chunkColliders.get(key);
-        if (entry?.meshes) {
-            entry.meshes.forEach(mesh => {
-                this.unregister(mesh);
-            });
-        }
-        if (entry?.grounds) {
-            entry.grounds.forEach(mesh => {
-                this.unregister(mesh);
-            });
-        }
+        if (entry?.meshes) entry.meshes.forEach(mesh => this.unregister(mesh));
+        if (entry?.grounds) entry.grounds.forEach(mesh => this.unregister(mesh));
         this.chunkColliders.delete(key);
     }
 
@@ -155,23 +137,15 @@ export class PhysicsSystem {
         return box;
     }
 
-    // Get all colliders (both direct and chunk-based)
     getAllColliders() {
         const list = [];
-
-        // Add all direct colliders
         for (const mesh of this.colliders) {
             const box = this.updateColliderBox(mesh);
             if (box) list.push(box);
         }
-
-        // Add chunk-based box colliders
         for (const entry of this.chunkColliders.values()) {
-            if (entry.boxes?.length) {
-                list.push(...entry.boxes);
-            }
+            if (entry.boxes?.length) list.push(...entry.boxes);
         }
-
         return list;
     }
 
@@ -179,15 +153,12 @@ export class PhysicsSystem {
         const cx = Math.floor(position.x / CONFIG.chunkSize);
         const cz = Math.floor(position.z / CONFIG.chunkSize);
         const list = [];
-
         for (let x = -1; x <= 1; x++) {
             for (let z = -1; z <= 1; z++) {
                 const key = `${cx + x},${cz + z}`;
                 const entry = this.chunkColliders.get(key);
                 if (!entry) continue;
-
                 if (entry.boxes?.length) list.push(...entry.boxes);
-
                 if (entry.meshes?.length) {
                     entry.meshes.forEach(mesh => {
                         const box = this.updateColliderBox(mesh);
@@ -196,7 +167,6 @@ export class PhysicsSystem {
                 }
             }
         }
-
         return list;
     }
 
@@ -204,33 +174,19 @@ export class PhysicsSystem {
         this.dynamicVolumes.push({ box, effect });
     }
 
-    // Raycast-based ground detection
-    // UPDATED: Now accepts 'body' to filter out self-collisions
     groundCast(body) {
         if (!this.colliders.length) return null;
-
         const origin = body.position.clone();
-        // Start from center up to avoid starting inside the ground, 
-        // but high enough to clear local geometry if needed
         origin.y += body.height * 0.5;
-
         this.raycaster.set(origin, new THREE.Vector3(0, -1, 0));
-        
-        // Raycast against all colliders
         const hits = this.raycaster.intersectObjects(this.colliders, false);
-
         if (!hits.length) return null;
-
-        // CRITICAL FIX: Filter out the body's own vehicle parts
-        // This prevents the helicopter from hitting its own skids/body and launching into space
         const validHit = hits.find(hit => {
-            // If the hit object belongs to the same vehicle as the body, ignore it
             if (hit.object.userData && hit.object.userData.vehicle && body.vehicleRef && hit.object.userData.vehicle === body.vehicleRef) {
                 return false;
             }
             return true;
         });
-
         return validHit || null;
     }
 
@@ -252,21 +208,16 @@ export class PhysicsSystem {
             body.velocity.setLength(CONFIG.terminalVelocity);
         }
 
-        // Apply velocity to position
         body.position.addScaledVector(body.velocity, delta);
 
-        // Apply angular physics for rigid bodies (vehicles)
         if (body.enableAngularPhysics && body.angularVelocity) {
-            // Apply angular damping
-            body.angularVelocity.multiplyScalar(body.angularDamping);
-
-            // Apply angular velocity to rotation
+            body.angularVelocity.multiplyScalar(Math.pow(body.angularDamping, delta * 60));
             body.rotation.x += body.angularVelocity.x * delta;
             body.rotation.y += body.angularVelocity.y * delta;
             body.rotation.z += body.angularVelocity.z * delta;
-
-            // Clamp extreme rotations for stability
-            const maxAngular = 10; // rad/s max angular velocity
+            
+            // Allow faster tumbling for realistic crashes
+            const maxAngular = 15; 
             body.angularVelocity.x = THREE.MathUtils.clamp(body.angularVelocity.x, -maxAngular, maxAngular);
             body.angularVelocity.y = THREE.MathUtils.clamp(body.angularVelocity.y, -maxAngular, maxAngular);
             body.angularVelocity.z = THREE.MathUtils.clamp(body.angularVelocity.z, -maxAngular, maxAngular);
@@ -277,54 +228,46 @@ export class PhysicsSystem {
             return;
         }
 
-        // Resolve collisions with nearby colliders
+        // Walls/Objects Collision (Box3)
         const collisionInfo = this.resolveCollisions(body.position, body.velocity, body.radius, body.height, body);
 
-        // Ground detection using raycast and terrain
-        // Pass 'body' to groundCast so it can filter self-intersections
-        const groundInfo = this.groundCast(body);
-        const terrainGround = this.sampleGround(body.position, terrainSampler);
+        // GROUND COLLISION LOGIC
+        // If it's a vehicle, SKIP the character-controller snapping. 
+        // VehicleManager handles suspension and chassis collision.
+        if (!body.isVehicle) {
+            const groundInfo = this.groundCast(body);
+            const terrainGround = this.sampleGround(body.position, terrainSampler);
 
-        const groundHeight = groundInfo
-            ? Math.max(terrainGround.height, groundInfo.point.y)
-            : terrainGround.height;
-        const groundNormal = groundInfo ? tempNormal : terrainGround.normal;
+            const groundHeight = groundInfo
+                ? Math.max(terrainGround.height, groundInfo.point.y)
+                : terrainGround.height;
+            const groundNormal = groundInfo ? tempNormal : terrainGround.normal;
 
-        body.groundNormal.copy(groundNormal);
-        const desiredHeight = groundHeight + 0.05;
-        const penetration = desiredHeight - body.position.y;
-        const movingDownward = body.velocity.y < 0;
+            body.groundNormal.copy(groundNormal);
+            const desiredHeight = groundHeight + 0.05;
+            const penetration = desiredHeight - body.position.y;
+            const movingDownward = body.velocity.y < 0;
 
-        body.grounded = collisionInfo.onGround;
+            body.grounded = collisionInfo.onGround;
 
-        // Ground Collision / Stabilization
-        if (penetration > 0) {
-            // Hard floor collision
-            body.position.y += penetration;
-            const vertical = body.velocity.y;
-            body.velocity.y = vertical < 0 ? 0 : Math.min(vertical, 1.5);
-
-            horizontal.set(body.velocity.x, 0, body.velocity.z);
-            const slide = this.projectOntoPlane(horizontal, groundNormal);
-            body.velocity.x = slide.x * Math.max(0, 1 - body.friction * delta);
-            body.velocity.z = slide.z * Math.max(0, 1 - body.friction * delta);
-            body.grounded = true;
-
-            // Bounce logic
-            if (vertical < -2 && body.bounciness > 0) {
-                 // Add a bit of upward force based on impact
-                body.velocity.y = -vertical * body.bounciness;
+            if (penetration > 0) {
+                body.position.y += penetration;
+                const vertical = body.velocity.y;
+                body.velocity.y = vertical < 0 ? 0 : Math.min(vertical, 1.5);
+                horizontal.set(body.velocity.x, 0, body.velocity.z);
+                const slide = this.projectOntoPlane(horizontal, groundNormal);
+                body.velocity.x = slide.x * Math.max(0, 1 - body.friction * delta);
+                body.velocity.z = slide.z * Math.max(0, 1 - body.friction * delta);
+                body.grounded = true;
+            } else if (penetration > -this.stepHeight && movingDownward) {
+                body.position.y += Math.max(penetration, 0);
+                body.velocity.y = Math.max(body.velocity.y, -1.5);
+                body.grounded = true;
             }
-        } else if (penetration > -this.stepHeight && movingDownward) {
-            // Step up / stick to slope
-            body.position.y += Math.max(penetration, 0);
-            body.velocity.y = Math.max(body.velocity.y, -1.5);
-            body.grounded = true;
-        } else if (Math.abs(penetration) < 0.25 && movingDownward) {
-            // Smooth slope descending
-            body.position.y = THREE.MathUtils.lerp(body.position.y, desiredHeight, 0.35);
-            body.velocity.y = Math.max(body.velocity.y, -2.5);
-            body.grounded = true;
+        } else {
+            // Vehicles are only grounded if collision resolution says so (e.g. on top of a static object)
+            // Otherwise, they float until Suspension or Chassis Collision logic kicks in.
+            body.grounded = collisionInfo.onGround;
         }
 
         this.applyVolumes(body, delta);
@@ -333,30 +276,6 @@ export class PhysicsSystem {
     projectOntoPlane(vector, normal) {
         const dot = vector.dot(normal);
         return vector.clone().sub(normal.clone().multiplyScalar(dot));
-    }
-
-    // Apply torque (rotational force) to a body
-    applyTorque(body, torque) {
-        if (!body.enableAngularPhysics || !body.angularVelocity) return;
-        // Simplified: torque directly affects angular velocity (ignore inertia tensor)
-        const inertiaFactor = 1.0 / Math.max(body.mass * 0.1, 1);
-        body.angularVelocity.add(torque.clone().multiplyScalar(inertiaFactor));
-    }
-
-    // Apply impulse at a point (creates both linear and angular velocity)
-    applyImpulseAtPoint(body, impulse, point) {
-        if (!body || body.mass <= 0) return;
-
-        // Linear velocity change
-        const linearChange = impulse.clone().divideScalar(body.mass);
-        body.velocity.add(linearChange);
-
-        // Angular velocity change (torque = r × F)
-        if (body.enableAngularPhysics && body.angularVelocity) {
-            const r = point.clone().sub(body.position);
-            const torque = new THREE.Vector3().crossVectors(r, impulse);
-            this.applyTorque(body, torque);
-        }
     }
 
     sampleGround(position, terrainSampler) {
@@ -380,9 +299,10 @@ export class PhysicsSystem {
         const colliders = this.getNearbyColliders(position);
         if (!colliders.length) return { onGround: false };
 
+        const r = body?.isVehicle ? radius * 0.8 : radius;
         let capsule = new THREE.Box3(
-            new THREE.Vector3(position.x - radius, position.y, position.z - radius),
-            new THREE.Vector3(position.x + radius, position.y + height, position.z + radius)
+            new THREE.Vector3(position.x - r, position.y, position.z - r),
+            new THREE.Vector3(position.x + r, position.y + height, position.z + r)
         );
 
         let onGround = false;
@@ -405,30 +325,29 @@ export class PhysicsSystem {
 
             const canStep = (box.max.y - position.y) <= this.stepHeight && (position.y + height) > box.min.y;
 
-            if ((minPenetration === overlapX || minPenetration === overlapZ) && canStep) {
+            if ((minPenetration === overlapX || minPenetration === overlapZ) && canStep && !body?.isVehicle) {
                 position.y = box.max.y;
                 if (velocity.y < 0) velocity.y = 0;
                 onGround = true;
             } else if (minPenetration === overlapX) {
                 const dir = Math.sign(capsuleCenter.x - colliderCenter.x) || 1;
                 position.x += overlapX * dir;
-                velocity.x = 0;
+                velocity.x *= body?.isVehicle ? 0.8 : 0;
             } else if (minPenetration === overlapZ) {
                 const dir = Math.sign(capsuleCenter.z - colliderCenter.z) || 1;
                 position.z += overlapZ * dir;
-                velocity.z = 0;
+                velocity.z *= body?.isVehicle ? 0.8 : 0;
             } else {
                 const dir = Math.sign(capsuleCenter.y - colliderCenter.y) || 1;
                 position.y += overlapY * dir;
                 if (dir > 0) onGround = true;
-                if (velocity.y < 0 && dir > 0) velocity.y = 0;
+                if (velocity.y < 0 && dir > 0) velocity.y *= -0.3; // Bounce
                 if (velocity.y > 0 && dir < 0) velocity.y = 0;
             }
 
-            // Rebuild capsule after each collision resolution
             capsule = new THREE.Box3(
-                new THREE.Vector3(position.x - radius, position.y, position.z - radius),
-                new THREE.Vector3(position.x + radius, position.y + height, position.z + radius)
+                new THREE.Vector3(position.x - r, position.y, position.z - r),
+                new THREE.Vector3(position.x + r, position.y + height, position.z + r)
             );
         }
 
