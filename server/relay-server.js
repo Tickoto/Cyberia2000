@@ -597,25 +597,45 @@ function handleCommand(client, message, clientId) {
             const roomId = clientRooms.get(client);
             const room = rooms.get(roomId);
 
-            if (room && info) {
-                const playerData = room.players.get(clientId);
-                if (playerData) {
-                    // Get player position from physics
-                    const world = physicsWorlds.get(roomId);
-                    const state = world?.getBodyState(info.entityId);
-
-                    const spawnPos = state?.position || playerData.position || { x: 0, y: 5, z: 0 };
-
-                    handleSpawnVehicle(client, {
-                        vehicleType: type,
-                        position: {
-                            x: spawnPos.x + 10,
-                            y: spawnPos.y + 5,
-                            z: spawnPos.z
-                        }
-                    }, clientId);
-                }
+            if (!room || !info) {
+                console.log(`/spawnvehicle failed: room=${!!room}, info=${!!info}`);
+                send(client, MessageType.CHAT_MESSAGE, {
+                    username: 'System',
+                    message: 'Unable to spawn vehicle - not in a room.'
+                });
+                return;
             }
+
+            // Use info.clientId (authoritative) to look up player data
+            const playerData = room.players.get(info.clientId);
+            if (!playerData) {
+                console.log(`/spawnvehicle failed: player ${info.clientId} not found in room.players (size=${room.players.size})`);
+                send(client, MessageType.CHAT_MESSAGE, {
+                    username: 'System',
+                    message: 'Unable to spawn vehicle - player not spawned. Try reconnecting.'
+                });
+                return;
+            }
+
+            // Get player position from physics
+            const world = physicsWorlds.get(roomId);
+            const state = world?.getBodyState(info.entityId);
+
+            const spawnPos = state?.position || playerData.position || { x: 0, y: 5, z: 0 };
+
+            handleSpawnVehicle(client, {
+                vehicleType: type,
+                position: {
+                    x: spawnPos.x + 10,
+                    y: spawnPos.y + 5,
+                    z: spawnPos.z
+                }
+            }, info.clientId);
+
+            send(client, MessageType.CHAT_MESSAGE, {
+                username: 'System',
+                message: `Spawning ${type}...`
+            });
         } else {
             send(client, MessageType.CHAT_MESSAGE, {
                 username: 'System',
