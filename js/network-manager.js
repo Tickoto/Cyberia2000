@@ -31,10 +31,16 @@ export const MessageType = {
     // Batch updates
     WORLD_STATE: 'world_state',
 
-    // Player specific
+    // Physics (server-authoritative)
+    PHYSICS_STATE: 'physics_state',
+    PLAYER_INPUT: 'player_input',
+    VEHICLE_INPUT: 'vehicle_input',
+    SPAWN_PLAYER: 'spawn_player',
+    SPAWN_VEHICLE: 'spawn_vehicle',
+
+    // Player events
     PLAYER_JOIN: 'player_join',
     PLAYER_LEAVE: 'player_leave',
-    PLAYER_INPUT: 'player_input',
 
     // Chat
     CHAT_MESSAGE: 'chat_message',
@@ -322,6 +328,7 @@ export class NetworkManager {
         this.onPlayerLeft = null;
         this.onChatMessage = null;
         this.onGameEvent = null;
+        this.onPhysicsStateReceived = null;
 
         // Network stats
         this.ping = 0;
@@ -336,6 +343,11 @@ export class NetworkManager {
 
         // Interpolation settings
         this.interpolationDelay = CONFIG.networkInterpolationDelay || 100; // ms
+
+        // Server physics state
+        this.serverPhysicsEnabled = false;
+        this.physicsTickRate = 60;
+        this.networkBroadcastRate = 20;
 
         this.setupDefaultHandlers();
     }
@@ -466,6 +478,14 @@ export class NetworkManager {
         this.registerMessageHandler(MessageType.HANDSHAKE, (data) => {
             if (data.isHost !== undefined) {
                 this.isHost = data.isHost;
+            }
+            // Handle server physics configuration
+            if (data.physicsEnabled !== undefined) {
+                this.serverPhysicsEnabled = data.physicsEnabled;
+                this.physicsTickRate = data.physicsTickRate || 60;
+                this.networkBroadcastRate = data.networkBroadcastRate || 20;
+                console.log('Network: Server physics enabled:', this.serverPhysicsEnabled,
+                    'tick rate:', this.physicsTickRate, 'broadcast rate:', this.networkBroadcastRate);
             }
             console.log('Network: Handshake complete, isHost:', this.isHost);
         });

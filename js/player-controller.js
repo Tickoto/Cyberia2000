@@ -2,6 +2,7 @@ import { CONFIG } from './config.js';
 import { getTerrainHeight } from './terrain.js';
 import { Character } from './character.js';
 import { showInteractionPanel, hideInteractionPanel, updateInteractionStatus, showInteractionPrompt, hideInteractionPrompt } from './ui.js';
+import { quaternionToEuler } from './physics-network-client.js';
 
 export class PlayerController {
     constructor({ scene, camera, worldManager, logChat, keys, mouse, physics, interactionManager, environment, vehicleManager }) {
@@ -37,6 +38,50 @@ export class PlayerController {
         this.seatRole = null;
         this.lastKeyStates = {};
         this.hoverVehicle = null;
+
+        // Server physics support
+        this.physicsNetworkClient = null;
+        this.useServerPhysics = false;
+        this.entityId = null;
+        this.lastInputSendTime = 0;
+        this.inputSendInterval = 50; // ms
+    }
+
+    setPhysicsNetworkClient(client) {
+        this.physicsNetworkClient = client;
+    }
+
+    setServerPhysicsMode(enabled) {
+        this.useServerPhysics = enabled;
+        console.log('PlayerController: Server physics mode:', enabled);
+    }
+
+    setEntityId(entityId) {
+        this.entityId = entityId;
+        if (this.physicsNetworkClient) {
+            this.physicsNetworkClient.setLocalEntity(entityId, true);
+        }
+    }
+
+    // Apply physics state received from server
+    applyServerPhysicsState(state) {
+        if (!state || !this.useServerPhysics) return;
+
+        // Apply position
+        if (state.position) {
+            this.char.group.position.set(state.position.x, state.position.y, state.position.z);
+            this.physicsBody.position.set(state.position.x, state.position.y, state.position.z);
+        }
+
+        // Apply velocity for animations
+        if (state.velocity) {
+            this.physicsBody.velocity.set(state.velocity.x, state.velocity.y, state.velocity.z);
+        }
+
+        // Update grounded state
+        if (state.grounded !== undefined) {
+            this.physicsBody.grounded = state.grounded;
+        }
     }
 
     update(delta) {
@@ -54,32 +99,68 @@ export class PlayerController {
             const running = this.keys['ShiftLeft'] && this.stamina > 0;
             const crouching = this.keys['ControlLeft'];
             const speed = crouching ? CONFIG.crouchSpeed : running ? CONFIG.runSpeed : CONFIG.speed;
-            let dx = 0, dz = 0;
 
-            if (this.keys['KeyW']) dz = 1;
-            if (this.keys['KeyS']) dz = -1;
-            if (this.keys['KeyA']) dx = -1;
-            if (this.keys['KeyD']) dx = 1;
+            // Gather input state
+            const forward = !!this.keys['KeyW'];
+            const backward = !!this.keys['KeyS'];
+            const left = !!this.keys['KeyA'];
+            const right = !!this.keys['KeyD'];
+            const jump = !!this.keys['Space'];
 
-            const moveDir = new THREE.Vector3(dx, 0, dz);
-            if (moveDir.lengthSq() > 0) {
-                moveDir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
+            if (this.useServerPhysics) {
+                // Server physics mode: send input to server, don't simulate locally
+                const now = Date.now();
+                if (now - this.lastInputSendTime >= this.inputSendInterval) {
+                    this.lastInputSendTime = now;
+                    if (this.physicsNetworkClient) {
+                        this.physicsNetworkClient.sendPlayerInput({
+                            forward,
+                            backward,
+                            left,
+                            right,
+                            jump,
+                            running,
+                            rotationY: this.yaw
+                        });
+                    }
+                }
+
+                // Update animation based on velocity from server
+                const velLength = Math.sqrt(
+                    this.physicsBody.velocity.x * this.physicsBody.velocity.x +
+                    this.physicsBody.velocity.z * this.physicsBody.velocity.z
+                );
+                this.char.group.rotation.y = this.yaw + Math.PI;
+                this.char.animate(velLength);
+
+            } else {
+                // Local physics mode (fallback)
+                let dx = 0, dz = 0;
+                if (forward) dz = 1;
+                if (backward) dz = -1;
+                if (left) dx = -1;
+                if (right) dx = 1;
+
+                const moveDir = new THREE.Vector3(dx, 0, dz);
+                if (moveDir.lengthSq() > 0) {
+                    moveDir.normalize().applyAxisAngle(new THREE.Vector3(0, 1, 0), this.yaw);
+                }
+
+                const targetVel = moveDir.multiplyScalar(speed);
+                const accel = this.physicsBody.grounded ? CONFIG.groundAccel : CONFIG.airAccel;
+                const lerpFactor = Math.min(1, accel * delta);
+
+                this.physicsBody.velocity.x = THREE.MathUtils.lerp(this.physicsBody.velocity.x, targetVel.x, lerpFactor);
+                this.physicsBody.velocity.z = THREE.MathUtils.lerp(this.physicsBody.velocity.z, targetVel.z, lerpFactor);
+
+                if (jump && this.physicsBody.grounded) {
+                    this.physicsBody.velocity.y = CONFIG.jumpSpeed;
+                    this.physicsBody.grounded = false;
+                }
+
+                this.char.group.rotation.y = this.yaw + Math.PI;
+                this.char.animate(targetVel.length());
             }
-
-            const targetVel = moveDir.multiplyScalar(speed);
-            const accel = this.physicsBody.grounded ? CONFIG.groundAccel : CONFIG.airAccel;
-            const lerpFactor = Math.min(1, accel * delta);
-
-            this.physicsBody.velocity.x = THREE.MathUtils.lerp(this.physicsBody.velocity.x, targetVel.x, lerpFactor);
-            this.physicsBody.velocity.z = THREE.MathUtils.lerp(this.physicsBody.velocity.z, targetVel.z, lerpFactor);
-
-            if (this.keys['Space'] && this.physicsBody.grounded) {
-                this.physicsBody.velocity.y = CONFIG.jumpSpeed;
-                this.physicsBody.grounded = false;
-            }
-
-            this.char.group.rotation.y = this.yaw + Math.PI;
-            this.char.animate(targetVel.length());
 
             this.updateStamina(delta, running);
         }
@@ -88,8 +169,11 @@ export class PlayerController {
             if (pos.y < 500) pos.y = 500;
         }
 
-        const terrainSampler = (x, z) => this.isInInterior ? 500 : getTerrainHeight(x, z);
-        this.physics.step(delta, terrainSampler);
+        // Only run local physics if server physics is disabled
+        if (!this.useServerPhysics) {
+            const terrainSampler = (x, z) => this.isInInterior ? 500 : getTerrainHeight(x, z);
+            this.physics.step(delta, terrainSampler);
+        }
 
         this.updateCamera();
 
@@ -290,7 +374,7 @@ export class PlayerController {
         this.currentSeat = seat;
         this.seatRole = seat.role;
         this.char.group.visible = false;
-        
+
         // Disable player physics so they don't fight the car
         this.physicsBody.velocity.set(0, 0, 0);
         this.physicsBody.noCollisions = true;
@@ -299,6 +383,30 @@ export class PlayerController {
         // Initialize inputs on vehicle if missing
         if (!vehicle.inputs) {
             vehicle.inputs = { throttle: 0, steer: 0, brake: false, pitch: 0, roll: 0, yaw: 0, lift: 0 };
+        }
+
+        // Mark vehicle as player controlled for server physics mode
+        if (this.vehicleManager && (this.seatRole === 'driver' || this.seatRole === 'pilot')) {
+            this.vehicleManager.markVehiclePlayerControlled(vehicle, true);
+        }
+
+        // Tell physics network client we're in a vehicle
+        if (this.physicsNetworkClient) {
+            this.physicsNetworkClient.currentVehicleId = vehicle.networkId;
+        }
+    }
+
+    exitVehicle() {
+        if (this.currentVehicle) {
+            // Unmark vehicle as player controlled
+            if (this.vehicleManager) {
+                this.vehicleManager.markVehiclePlayerControlled(this.currentVehicle, false);
+            }
+
+            // Tell physics network client we're out of vehicle
+            if (this.physicsNetworkClient) {
+                this.physicsNetworkClient.clearVehicleInput();
+            }
         }
     }
 
